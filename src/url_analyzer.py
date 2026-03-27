@@ -8,12 +8,55 @@ HEADERS = {
 
 CTA_KEYWORDS = [
     "お問い合わせ", "問合せ", "申込", "申し込み", "お申込み",
-    "相談", "無料", "ダウンロード", "資料"
+    "相談", "ダウンロード", "資料請求", "資料"
+]
+
+CTA_HREF_HINTS = [
+    "contact", "inquiry", "form", "download", "pdf"
 ]
 
 def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
+def _normalize_cta(text: str) -> str:
+    text = _clean(text)
+    text = text.replace("  ", " ")
+    text = text.replace("を 申込む", "を申込む")
+    text = text.replace("カウンセリング ", "カウンセリング")
+    return text
+
+def _is_cta(text: str, href: str) -> bool:
+    href_l = (href or "").lower()
+
+    exclude_texts = [
+        "詳しくはこちら",
+        "詳細はこちら",
+    ]
+
+    if text in exclude_texts:
+        return False
+
+    if "詳しくはこちら" in text:
+        return False
+
+    if text in ["請負", "常駐", "派遣"]:
+        return False
+
+    primary_keywords = [
+        "お問い合わせ", "問合せ", "申込", "申し込み", "お申込み", "相談"
+    ]
+    secondary_keywords = [
+        "ダウンロード", "資料請求", "資料"
+    ]
+
+    if any(k in text for k in primary_keywords + secondary_keywords):
+        return len(text) <= 40
+
+    if any(h in href_l for h in ["contact", "inquiry", "form", "download", "pdf"]):
+        return len(text) <= 40
+
+    return False
+    
 def analyze_url(url: str) -> dict:
     r = requests.get(url, headers=HEADERS, timeout=20)
     r.raise_for_status()
@@ -33,8 +76,11 @@ def analyze_url(url: str) -> dict:
 
     ctas = []
     for link in links:
-        if any(k in link["text"] for k in CTA_KEYWORDS):
-            ctas.append(link["text"])
+        text = _normalize_cta(link["text"])
+        href = link["href"]
+
+        if _is_cta(text, href):
+            ctas.append(text)
 
     unique_ctas = sorted(set(ctas))
     body_text = _clean(soup.get_text(" ", strip=True))
@@ -50,19 +96,29 @@ def analyze_url(url: str) -> dict:
     if not title:
         score -= 15
         findings.append("titleなし")
+
     if not h1_list:
         score -= 20
         findings.append("h1なし")
+
     if h1_list and any("LP" == h1 or h1.endswith("LP") for h1 in h1_list):
         score -= 10
         improvements.append("H1を『マニュアル作成サービス』のような検索意図に合う表現へ変更")
-    if len(unique_ctas) >= 3:
+
+    if h1_list and title and "マニュアル作成サービス" in title and "マニュアルLP" in h1_list:
+        score -= 5
+        improvements.append("TitleとH1の意味を揃える")
+
+    if len(unique_ctas) >= 4:
         score -= 8
         improvements.append("CTAが分散しているため主CVを1つに寄せる")
+
     if has_case:
         improvements.append("事例に定量成果を追加すると説得力が上がる")
+
     if has_faq:
         findings.append("FAQあり")
+
     if has_pdf:
         findings.append("PDF導線あり")
 

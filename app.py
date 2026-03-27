@@ -4,10 +4,12 @@ import plotly.express as px
 from src.analysis import read_mart, total_kpis, channel_summary, detect_anomalies
 from src.recommend import generate_recommendations
 from src.url_analyzer import analyze_url
+from src.etl import load_csv_to_duckdb
 
 st.set_page_config(page_title="Marketing Auto Analyzer", layout="wide")
 st.title("Marketing Auto Analyzer")
 
+load_csv_to_duckdb()
 df = read_mart()
 kpis = total_kpis(df)
 channels = channel_summary(df)
