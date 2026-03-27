@@ -1,0 +1,14 @@
+cat > .gitignore <<'EOF'
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+db/*.duckdb
+reports/*
+data/*.parquet
+.streamlit/
+.DS_Store
+EOF
