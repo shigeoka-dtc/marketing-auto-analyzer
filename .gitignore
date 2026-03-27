@@ -1,4 +1,3 @@
-cat > .gitignore <<'EOF'
 __pycache__/
 *.pyc
 *.pyo
@@ -11,4 +10,3 @@ reports/*
 data/*.parquet
 .streamlit/
 .DS_Store
-EOF
