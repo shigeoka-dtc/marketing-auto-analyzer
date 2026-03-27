@@ -4,6 +4,7 @@ duckdb
 streamlit
 plotly
 pyarrow
-openpyxlrequests
+openpyxl
+requests
 beautifulsoup4
 lxml
