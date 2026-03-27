@@ -1,12 +1,18 @@
 services:
-  analyzer:
+  worker:
     build: .
     restart: unless-stopped
     volumes:
       - ./data:/app/data
       - ./db:/app/db
+      - ./reports:/app/reports
       - ./state:/app/state
-    command: python worker.py
+    environment:
+      OLLAMA_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: phi3:mini
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: python -m src.worker
 
   dashboard:
     build: .
@@ -14,8 +20,13 @@ services:
     volumes:
       - ./data:/app/data
       - ./db:/app/db
+      - ./reports:/app/reports
       - ./state:/app/state
+    environment:
+      OLLAMA_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: phi3:mini
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8501:8501"
     command: streamlit run app.py --server.address 0.0.0.0 --server.port 8501
-    
