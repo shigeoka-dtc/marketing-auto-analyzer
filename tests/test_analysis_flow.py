@@ -3,13 +3,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src import analysis, db_utils, etl
+from src import analysis, db_utils, etl, state
 from src.deep_analysis import generate_deep_analysis
 from src.recommend import generate_recommendations
 from src.report import render_marketing_report
+from src.summary_service import build_rule_based_summary, generate_summary
 from src.url_analyzer import analyze_site
 from src.url_targets import parse_target_urls
-from src.worker import build_rule_based_summary, generate_summary
 
 
 CSV_TEXT = """date,channel,campaign,sessions,users,conversions,revenue,cost
@@ -76,20 +76,25 @@ class AnalysisFlowTests(unittest.TestCase):
         self.csv_path = base / "marketing.csv"
         self.db_path = base / "marketing.duckdb"
         self.lock_path = base / "marketing.duckdb.lock"
+        self.state_db_path = base / "state.sqlite"
         self.csv_path.write_text(CSV_TEXT, encoding="utf-8")
 
         self.old_csv_path = etl.CSV_PATH
         self.old_db_path = db_utils.DB_PATH
         self.old_lock_path = db_utils.LOCK_PATH
+        self.old_state_db = state.STATE_DB
 
         etl.CSV_PATH = str(self.csv_path)
         db_utils.DB_PATH = str(self.db_path)
         db_utils.LOCK_PATH = str(self.lock_path)
+        state.STATE_DB = str(self.state_db_path)
+        state.init_state()
 
     def tearDown(self):
         etl.CSV_PATH = self.old_csv_path
         db_utils.DB_PATH = self.old_db_path
         db_utils.LOCK_PATH = self.old_lock_path
+        state.STATE_DB = self.old_state_db
         self.tempdir.cleanup()
 
     def test_etl_skips_when_csv_is_unchanged(self):
@@ -263,6 +268,30 @@ class AnalysisFlowTests(unittest.TestCase):
                 "https://example.com/service",
             ],
         )
+
+    def test_claim_next_urls_marks_processing_and_respects_retry(self):
+        state.sync_url_queue(
+            [
+                "https://example.com/",
+                "https://example.com/service",
+            ],
+            base_priority=10,
+        )
+
+        first_claim = state.claim_next_urls(limit=1)
+        self.assertEqual(first_claim, ["https://example.com/"])
+
+        queue_rows = state.list_url_queue()
+        first_row = next(row for row in queue_rows if row["url"] == "https://example.com/")
+        self.assertEqual(first_row["status"], "processing")
+        self.assertIsNotNone(first_row["claimed_at"])
+
+        second_claim = state.claim_next_urls(limit=2)
+        self.assertEqual(second_claim, ["https://example.com/service"])
+
+        state.mark_url_retry("https://example.com/", error_message="boom", delay_minutes=0)
+        retry_claim = state.claim_next_urls(limit=1)
+        self.assertEqual(retry_claim, ["https://example.com/"])
 
     @patch("src.url_analyzer.requests.get")
     def test_analyze_site_crawls_internal_pages(self, mock_get):

@@ -27,7 +27,7 @@
 ## Docker 起動中の自動分析
 
 - `worker` が起動中、`marketing.csv` と対象サイトを定期的に再分析します
-- `dashboard` は起動時に `python main.py` を1回実行してから画面を開きます
+- `dashboard` は画面表示に専念し、重い分析実行は `worker` が担当します
 - 継続間隔はデフォルトで `600` 秒です
 - 単発の分析でも、チャネル・異常・サイト改善優先度までルールベースで深めに出します
 - ローカルLLMを有効にすると、同じ1回の実行で深掘り分析、チャネル別訴求、H1/CTA案、実装チケットまで出力します
@@ -76,6 +76,9 @@ WORKER_INTERVAL_SECONDS=300
 - `DEEP_ANALYSIS_ENABLED=true`: 深掘り分析セクションを有効化
 - `DEEP_ANALYSIS_NUM_PREDICT=1200`: ローカルLLMに渡す出力量の目安
 - `OLLAMA_NUM_PREDICT=300`: 通常要約の出力量
+- `SQLITE_BUSY_TIMEOUT_MS=30000`: dashboard と worker の同時アクセス待ち時間
+- `URL_PROCESSING_STALE_MINUTES=30`: 取りっぱなしになった URL を再回収するまでの目安
+- `URL_RETRY_DELAY_MINUTES=15`: URL 分析失敗後に再試行するまでの待ち時間
 
 `.env` を編集したら、再起動します。
 

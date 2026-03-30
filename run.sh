@@ -1,5 +1,5 @@
 #!/bin/bash
 set -e
 
-python main.py
-exec streamlit run app.py --server.address 0.0.0.0 --server.port 8501
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec /bin/bash "$SCRIPT_DIR/run_dashboard.sh"

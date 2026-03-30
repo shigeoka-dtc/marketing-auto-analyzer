@@ -6,9 +6,9 @@ from src.deep_analysis import generate_deep_analysis
 from src.etl import load_csv_to_duckdb
 from src.recommend import generate_recommendations
 from src.report import render_marketing_report, save_report
+from src.summary_service import generate_summary
 from src.url_analyzer import analyze_site
 from src.url_targets import load_target_urls
-from src.worker import generate_summary
 
 TARGET_SITE_MAX_PAGES = int(os.getenv("TARGET_SITE_MAX_PAGES", "5"))
 

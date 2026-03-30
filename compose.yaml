@@ -17,13 +17,16 @@ services:
       OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-300}
       DEEP_ANALYSIS_ENABLED: ${DEEP_ANALYSIS_ENABLED:-true}
       DEEP_ANALYSIS_NUM_PREDICT: ${DEEP_ANALYSIS_NUM_PREDICT:-1200}
+      SQLITE_BUSY_TIMEOUT_MS: ${SQLITE_BUSY_TIMEOUT_MS:-30000}
+      URL_PROCESSING_STALE_MINUTES: ${URL_PROCESSING_STALE_MINUTES:-30}
+      URL_RETRY_DELAY_MINUTES: ${URL_RETRY_DELAY_MINUTES:-15}
       WORKER_INTERVAL_SECONDS: ${WORKER_INTERVAL_SECONDS:-600}
       TARGET_SITE_MAX_PAGES: ${TARGET_SITE_MAX_PAGES:-5}
       URL_BATCH_SIZE: ${URL_BATCH_SIZE:-3}
       URL_ANALYSIS_TIMEOUT: ${URL_ANALYSIS_TIMEOUT:-20}
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: python -m src.worker
+    command: /bin/bash /app/run_worker.sh
 
   dashboard:
     build: .
@@ -43,9 +46,11 @@ services:
       OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-300}
       DEEP_ANALYSIS_ENABLED: ${DEEP_ANALYSIS_ENABLED:-true}
       DEEP_ANALYSIS_NUM_PREDICT: ${DEEP_ANALYSIS_NUM_PREDICT:-1200}
+      SQLITE_BUSY_TIMEOUT_MS: ${SQLITE_BUSY_TIMEOUT_MS:-30000}
       TARGET_SITE_MAX_PAGES: ${TARGET_SITE_MAX_PAGES:-5}
       URL_ANALYSIS_TIMEOUT: ${URL_ANALYSIS_TIMEOUT:-20}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "8501:8501"
+    command: /bin/bash /app/run_dashboard.sh
