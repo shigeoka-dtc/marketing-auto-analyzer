@@ -1,12 +1,28 @@
 from pathlib import Path
+import os
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
-STATE_DB = "db/state.sqlite"
+STATE_DB = os.getenv("STATE_DB", "db/state.sqlite")
+
+
+def _resolve_state_db_path() -> Path:
+    requested = Path(STATE_DB)
+    requested.parent.mkdir(parents=True, exist_ok=True)
+
+    if requested.exists():
+        if os.access(requested, os.W_OK):
+            return requested
+    elif os.access(requested.parent, os.W_OK):
+        return requested
+
+    fallback = Path("db/state.local.sqlite")
+    fallback.parent.mkdir(parents=True, exist_ok=True)
+    return fallback
 
 def get_conn():
-    Path("db").mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(STATE_DB)
+    db_path = _resolve_state_db_path()
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -48,7 +64,7 @@ def set_state(key: str, value: str):
         ON CONFLICT(key) DO UPDATE SET
             value=excluded.value,
             updated_at=excluded.updated_at
-    """, (key, value, datetime.utcnow().isoformat()))
+    """, (key, value, datetime.now(UTC).isoformat()))
     conn.commit()
     conn.close()
 
@@ -87,7 +103,7 @@ def mark_url_done(url: str):
         SET status = 'done',
             last_analyzed_at = ?
         WHERE url = ?
-    """, (datetime.utcnow().isoformat(), url))
+    """, (datetime.now(UTC).isoformat(), url))
     conn.commit()
     conn.close()
 
@@ -100,13 +116,15 @@ def requeue_stale_done_urls(hours: int = 24):
     """).fetchall()
 
     from datetime import datetime, timedelta
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     for r in rows:
         ts = r["last_analyzed_at"]
         if not ts:
             continue
         try:
             dt = datetime.fromisoformat(ts)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
         except Exception:
             continue
         if now - dt >= timedelta(hours=hours):

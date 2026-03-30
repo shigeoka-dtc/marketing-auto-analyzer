@@ -6,7 +6,11 @@ __pycache__/
 venv/
 env/
 db/*.duckdb
+db/*.lock
+db/state.local.sqlite
+state/*.sqlite
 reports/*
+logs/*
 data/*.parquet
 .streamlit/
 .DS_Store
