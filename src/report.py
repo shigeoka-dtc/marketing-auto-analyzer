@@ -134,19 +134,37 @@ def render_marketing_report(
                 ]
             )
 
-    url_lines = []
+    site_rows = []
+    weak_page_rows = []
     for result in url_results:
-        url_lines.append(
-            "- {url} | score={score} | CTA={cta} | findings={findings} | improvements={improvements}".format(
-                url=result.get("url"),
-                score=result.get("score"),
-                cta=result.get("cta_count"),
-                findings=", ".join(result.get("findings", [])) or "-",
-                improvements=", ".join(result.get("improvements", [])) or "-",
-            )
+        site_rows.append(
+            [
+                result.get("url"),
+                result.get("page_count", 0),
+                result.get("score", "-"),
+                ", ".join(result.get("site_findings", [])[:4]) or "-",
+                ", ".join(result.get("site_improvements", [])[:4]) or "-",
+            ]
         )
-    if not url_lines:
-        url_lines = ["- 今回はURL診断結果なし"]
+
+        for page in result.get("weak_pages", []):
+            weak_page_rows.append(
+                [
+                    result.get("url"),
+                    page.get("url"),
+                    page.get("score"),
+                    page.get("cta_count", 0),
+                    ", ".join(page.get("findings", [])[:3]) or "-",
+                    ", ".join(page.get("improvements", [])[:3]) or "-",
+                ]
+            )
+
+    error_lines = []
+    for result in url_results:
+        for error in result.get("errors", []):
+            error_lines.append(f"- {error.get('url')}: {error.get('error')}")
+    if not error_lines:
+        error_lines = ["- サイト巡回エラーなし"]
 
     return f"""# Daily Marketing Analysis
 
@@ -173,8 +191,20 @@ Generated: {datetime.now(UTC).isoformat()}
     diagnostic_rows,
 )}
 
-## URL Results
-{chr(10).join(url_lines)}
+## Site Results
+{_markdown_table(
+    ["Site", "Pages", "Avg Score", "Findings", "Improvements"],
+    site_rows,
+)}
+
+## Weak Pages
+{_markdown_table(
+    ["Site", "Page", "Score", "CTA", "Findings", "Improvements"],
+    weak_page_rows,
+)}
+
+## Site Crawl Errors
+{chr(10).join(error_lines)}
 
 ## LLM Summary
 {llm_summary or "LLM summary unavailable"}

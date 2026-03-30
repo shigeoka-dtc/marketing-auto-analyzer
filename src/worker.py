@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 import time
 import traceback
 from datetime import UTC, datetime
@@ -10,17 +11,21 @@ from src.llm_client import ask_llm
 from src.recommend import generate_recommendations
 from src.report import render_marketing_report, save_report
 from src.state import (
-    init_state,
-    enqueue_url,
     fetch_next_urls,
+    init_state,
     mark_url_done,
+    mark_url_retry,
     requeue_stale_done_urls,
+    sync_url_queue,
 )
-from src.url_analyzer import analyze_url
+from src.url_analyzer import analyze_site
+from src.url_targets import load_target_urls, target_urls_file_exists
 
-SLEEP_SECONDS = 600
+SLEEP_SECONDS = int(os.getenv("WORKER_INTERVAL_SECONDS", "600"))
+TARGET_SITE_MAX_PAGES = int(os.getenv("TARGET_SITE_MAX_PAGES", "5"))
+URL_BATCH_SIZE = int(os.getenv("URL_BATCH_SIZE", "3"))
 SEED_URLS = [
-    "https://service.daitecjp.com/index.php/manual-production/"
+    "https://service.daitecjp.com/index.php/manual-production/",
 ]
 
 logger = logging.getLogger(__name__)
@@ -72,7 +77,18 @@ def _diagnostic_records(snapshot: dict):
     return diagnostics[columns].to_dict(orient="records")
 
 
-def build_rule_based_summary(snapshot: dict, recommendations: list, url_results: list, llm_note: str | None = None) -> str:
+def load_seed_urls() -> list[str]:
+    if target_urls_file_exists():
+        return load_target_urls()
+    return SEED_URLS
+
+
+def build_rule_based_summary(
+    snapshot: dict,
+    recommendations: list,
+    url_results: list,
+    llm_note: str | None = None,
+) -> str:
     latest = snapshot["latest"]
     latest_totals = latest.get("latest", {})
     latest_delta = latest.get("delta_vs_previous", {})
@@ -101,6 +117,12 @@ def build_rule_based_summary(snapshot: dict, recommendations: list, url_results:
     else:
         action_lines.append("- 優先度の高い改善提案はありません。")
 
+    if url_results and len(action_lines) < 4:
+        weakest_site = min(url_results, key=lambda item: item.get("score", 0))
+        site_improvement = (weakest_site.get("site_improvements") or [None])[0]
+        if site_improvement:
+            action_lines.append(f"- P2 site: {site_improvement}")
+
     caution_lines = ["3. 注意点"]
     if alerts:
         for alert in alerts[:3]:
@@ -109,10 +131,16 @@ def build_rule_based_summary(snapshot: dict, recommendations: list, url_results:
         caution_lines.append("- 大きな異常は検出されていません。")
 
     if url_results:
-        lowest_score = min(url_results, key=lambda x: x.get("score", 0))
+        weakest_site = min(url_results, key=lambda item: item.get("score", 0))
         caution_lines.append(
-            f"- URL診断: {lowest_score.get('url')} の score={lowest_score.get('score')}"
+            f"- サイト診断: {weakest_site.get('url')} の平均score={weakest_site.get('score')} "
+            f"({weakest_site.get('page_count', 0)}ページ)"
         )
+        weakest_page = (weakest_site.get("weak_pages") or [None])[0]
+        if weakest_page:
+            caution_lines.append(
+                f"- 弱いページ: {weakest_page.get('url')} score={weakest_page.get('score')}"
+            )
 
     if llm_note:
         caution_lines.append(f"- LLM補足: {llm_note}")
@@ -146,12 +174,18 @@ Priority Actions:
 Channel Diagnostics:
 {_diagnostic_records(snapshot)}
 
-URL Summary:
+Site Summary:
 {compact_urls}
 """
 
 
-def generate_summary(snapshot: dict, recommendations: list, compact_urls: list, url_results: list, skip_llm: bool = False) -> str:
+def generate_summary(
+    snapshot: dict,
+    recommendations: list,
+    compact_urls: list,
+    url_results: list,
+    skip_llm: bool = False,
+) -> str:
     if skip_llm:
         return build_rule_based_summary(
             snapshot,
@@ -162,17 +196,26 @@ def generate_summary(snapshot: dict, recommendations: list, compact_urls: list, 
 
     llm_summary = ask_llm(build_llm_prompt(snapshot, recommendations, compact_urls))
     if llm_summary.startswith("[LLM"):
-        return build_rule_based_summary(snapshot, recommendations, url_results, llm_note=llm_summary)
+        return build_rule_based_summary(
+            snapshot,
+            recommendations,
+            url_results,
+            llm_note=llm_summary,
+        )
     return llm_summary
 
 
-def run_cycle(skip_llm: bool = False, force_reload: bool = False):
+def run_cycle(
+    skip_llm: bool = False,
+    force_reload: bool = False,
+    max_site_pages: int = TARGET_SITE_MAX_PAGES,
+):
     logger.info("Initializing state")
     init_state()
 
-    for url in SEED_URLS:
-        enqueue_url(url, priority=10)
-
+    seed_urls = load_seed_urls()
+    logger.info("Syncing target URLs: %s", len(seed_urls))
+    sync_url_queue(seed_urls, base_priority=10)
     requeue_stale_done_urls(hours=24)
 
     logger.info("Loading CSV into DuckDB")
@@ -189,16 +232,21 @@ def run_cycle(skip_llm: bool = False, force_reload: bool = False):
     )
 
     url_results = []
-    for url in fetch_next_urls(limit=3):
-        logger.info("Analyzing URL: %s", url)
+    for url in fetch_next_urls(limit=URL_BATCH_SIZE):
+        logger.info("Analyzing site: %s", url)
         try:
-            result = analyze_url(url)
+            result = analyze_site(url, max_pages=max_site_pages)
             url_results.append(result)
             mark_url_done(url)
-            logger.info("Completed URL: %s", url)
+            logger.info(
+                "Completed site: %s (%s pages)",
+                url,
+                result.get("page_count", 0),
+            )
         except Exception:
+            mark_url_retry(url)
             tb = traceback.format_exc()
-            logger.exception("Failed URL analysis: %s", url)
+            logger.exception("Failed site analysis: %s", url)
             path = save_report(
                 "worker_error_url",
                 f"# URL Analysis Error\n\n"
@@ -210,20 +258,30 @@ def run_cycle(skip_llm: bool = False, force_reload: bool = False):
 
     compact_urls = [
         {
-            "url": r.get("url"),
-            "score": r.get("score"),
-            "findings": r.get("findings", [])[:3],
-            "improvements": r.get("improvements", [])[:3],
-            "cta_count": r.get("cta_count"),
-            "has_faq": r.get("has_faq"),
-            "has_case": r.get("has_case"),
-            "has_pdf": r.get("has_pdf"),
+            "url": result.get("url"),
+            "score": result.get("score"),
+            "page_count": result.get("page_count"),
+            "site_findings": result.get("site_findings", [])[:3],
+            "site_improvements": result.get("site_improvements", [])[:3],
+            "weak_pages": [
+                {
+                    "url": page.get("url"),
+                    "score": page.get("score"),
+                }
+                for page in result.get("weak_pages", [])[:2]
+            ],
         }
-        for r in url_results
+        for result in url_results
     ]
 
     logger.info("Generating summary")
-    summary = generate_summary(snapshot, recommendations, compact_urls, url_results, skip_llm=skip_llm)
+    summary = generate_summary(
+        snapshot,
+        recommendations,
+        compact_urls,
+        url_results,
+        skip_llm=skip_llm,
+    )
 
     report = render_marketing_report(
         snapshot=snapshot,
@@ -241,17 +299,26 @@ def main():
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--skip-llm", action="store_true")
     parser.add_argument("--force-reload", action="store_true")
+    parser.add_argument("--max-site-pages", type=int, default=TARGET_SITE_MAX_PAGES)
     args = parser.parse_args()
 
     setup_logging()
 
     if args.once:
-        run_cycle(skip_llm=args.skip_llm, force_reload=args.force_reload)
+        run_cycle(
+            skip_llm=args.skip_llm,
+            force_reload=args.force_reload,
+            max_site_pages=args.max_site_pages,
+        )
         return
 
     while True:
         try:
-            run_cycle(skip_llm=args.skip_llm, force_reload=args.force_reload)
+            run_cycle(
+                skip_llm=args.skip_llm,
+                force_reload=args.force_reload,
+                max_site_pages=args.max_site_pages,
+            )
         except Exception:
             tb = traceback.format_exc()
             logger.exception("Worker cycle failed")

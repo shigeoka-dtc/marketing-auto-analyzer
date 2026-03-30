@@ -1,3 +1,5 @@
+import os
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -5,7 +7,16 @@ import streamlit as st
 from src.analysis import build_analysis_snapshot, read_mart
 from src.etl import load_csv_to_duckdb
 from src.recommend import generate_recommendations
-from src.url_analyzer import analyze_url
+from src.state import init_state, list_url_queue, sync_url_queue
+from src.url_analyzer import analyze_site
+from src.url_targets import (
+    load_target_urls,
+    parse_target_urls,
+    save_target_urls,
+    target_urls_to_text,
+)
+
+TARGET_SITE_MAX_PAGES = int(os.getenv("TARGET_SITE_MAX_PAGES", "5"))
 
 
 def _fmt_int(value) -> str:
@@ -38,9 +49,31 @@ def _fmt_delta(value):
     return f"{float(value) * 100:+.1f}%"
 
 
+def _site_pages_frame(site_result: dict) -> pd.DataFrame:
+    pages = []
+    for page in site_result.get("pages", []):
+        pages.append(
+            {
+                "url": page.get("url"),
+                "score": page.get("score"),
+                "cta_count": page.get("cta_count"),
+                "h1_count": len(page.get("h1", [])),
+                "h2_count": page.get("h2_count"),
+                "has_case": page.get("has_case"),
+                "has_faq": page.get("has_faq"),
+                "has_pdf": page.get("has_pdf"),
+                "findings": ", ".join(page.get("findings", [])[:4]) or "-",
+                "improvements": ", ".join(page.get("improvements", [])[:4]) or "-",
+            }
+        )
+    return pd.DataFrame(pages)
+
+
 st.set_page_config(page_title="Marketing Auto Analyzer", layout="wide")
 st.title("Marketing Auto Analyzer")
+st.caption("無料モードでは CSV 分析とサイト診断をAPIなしで自動化できます。ローカルLLMを使う場合だけ Ollama を有効化してください。")
 
+init_state()
 load_result = load_csv_to_duckdb()
 df = read_mart()
 snapshot = build_analysis_snapshot(df)
@@ -51,6 +84,8 @@ channels = snapshot["channels"]
 diagnostics = snapshot["diagnostics"]
 alerts = snapshot["alerts"]
 recs = generate_recommendations(channels, diagnostics, alerts)
+target_urls = load_target_urls()
+queue_rows = list_url_queue()
 
 latest_metrics = latest.get("latest", {})
 latest_delta = latest.get("delta_vs_previous", {})
@@ -160,39 +195,62 @@ if not recs_view.empty:
 else:
     st.info("改善提案はありません。")
 
-st.subheader("URL診断")
-target_url = st.text_input("診断するURL", "https://service.daitecjp.com/index.php/manual-production/")
+st.subheader("対象サイト設定")
+st.caption("1行に1URLで登録してください。worker はこの一覧を自動で巡回し、Docker起動中にレポートを更新します。")
 
-if st.button("URLを診断"):
+url_text = st.text_area(
+    "対象サイトURL一覧",
+    value=target_urls_to_text(target_urls),
+    height=140,
+    help="例: https://example.com/service",
+)
+
+if st.button("対象サイト一覧を保存"):
+    parsed_urls = parse_target_urls(url_text)
+    save_target_urls(parsed_urls)
+    sync_url_queue(parsed_urls, base_priority=10)
+    st.success(f"{len(parsed_urls)}件の対象サイトを保存しました。")
+    st.rerun()
+
+if queue_rows:
+    queue_df = pd.DataFrame(queue_rows)
+    st.dataframe(queue_df, width="stretch")
+else:
+    st.info("まだ対象サイトが登録されていません。")
+
+st.subheader("サイト診断")
+default_site_url = target_urls[0] if target_urls else "https://service.daitecjp.com/index.php/manual-production/"
+site_url = st.text_input("診断する起点URL", default_site_url)
+site_page_limit = st.slider("巡回ページ数", min_value=1, max_value=10, value=min(max(TARGET_SITE_MAX_PAGES, 1), 10))
+
+if st.button("サイト全体を診断"):
     try:
-        result = analyze_url(target_url)
+        result = analyze_site(site_url, max_pages=site_page_limit)
+        weakest_page = (result.get("weak_pages") or [None])[0]
+
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Score", result["score"])
-        c2.metric("CTA数", result["cta_count"])
-        c3.metric("H1数", len(result["h1"]))
-        c4.metric("H2数", result["h2_count"])
+        c1.metric("平均Score", result["score"])
+        c2.metric("分析ページ数", result["page_count"])
+        c3.metric("弱いページScore", weakest_page.get("score") if weakest_page else "-")
+        c4.metric("巡回エラー数", len(result.get("errors", [])))
 
-        st.write("**Title**")
-        st.write(result["title"])
-
-        st.write("**H1**")
-        st.write(result["h1"] if result["h1"] else "なし")
-
-        st.write("**CTA一覧**")
-        st.write(result["unique_ctas"])
-
-        st.write("**検出項目**")
-        st.json(
-            {
-                "has_faq": result["has_faq"],
-                "has_case": result["has_case"],
-                "has_pdf": result["has_pdf"],
-            }
-        )
-
-        st.write("**改善提案**")
-        for item in result["improvements"]:
+        st.write("**サイト所見**")
+        for item in result.get("site_findings", []):
             st.write(f"- {item}")
 
-    except Exception as e:
-        st.error(f"URL診断でエラー: {e}")
+        st.write("**サイト改善提案**")
+        for item in result.get("site_improvements", []):
+            st.write(f"- {item}")
+
+        pages_df = _site_pages_frame(result)
+        if not pages_df.empty:
+            st.write("**ページ別詳細**")
+            st.dataframe(pages_df, width="stretch")
+
+        if result.get("errors"):
+            st.write("**巡回エラー**")
+            for error in result["errors"]:
+                st.write(f"- {error['url']}: {error['error']}")
+
+    except Exception as exc:
+        st.error(f"サイト診断でエラー: {exc}")
