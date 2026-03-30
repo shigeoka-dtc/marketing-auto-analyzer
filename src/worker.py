@@ -6,6 +6,7 @@ import traceback
 from datetime import UTC, datetime
 
 from src.analysis import build_analysis_snapshot, read_mart
+from src.deep_analysis import generate_deep_analysis
 from src.etl import load_csv_to_duckdb
 from src.llm_client import ask_llm
 from src.recommend import generate_recommendations
@@ -77,6 +78,50 @@ def _diagnostic_records(snapshot: dict):
     return diagnostics[columns].to_dict(orient="records")
 
 
+def _diagnostic_focus_lines(snapshot: dict) -> list[str]:
+    diagnostics = snapshot["diagnostics"]
+    if diagnostics is None or diagnostics.empty:
+        return ["- チャネル別の大きな変動は見つかっていません。"]
+
+    lines = []
+    issues = diagnostics[diagnostics["status"].isin(["critical", "warning"])].head(2)
+    opportunities = diagnostics[diagnostics["status"] == "opportunity"].head(1)
+
+    for _, row in issues.iterrows():
+        lines.append(
+            f"- 要改善 {row['channel']}: {row['reason']} / 対応: {row['recommended_action']}"
+        )
+
+    for _, row in opportunities.iterrows():
+        lines.append(
+            f"- 伸長候補 {row['channel']}: {row['reason']} / 対応: {row['recommended_action']}"
+        )
+
+    return lines or ["- チャネル別の大きな変動は見つかっていません。"]
+
+
+def _site_focus_lines(url_results: list) -> list[str]:
+    if not url_results:
+        return ["- 対象サイトの診断結果はまだありません。"]
+
+    weakest_site = min(url_results, key=lambda item: item.get("score", 0))
+    lines = [
+        f"- 最も弱いサイト: {weakest_site.get('url')} / 平均score={weakest_site.get('score')} / "
+        f"分析ページ数={weakest_site.get('page_count', 0)}"
+    ]
+
+    for page in weakest_site.get("weak_pages", [])[:2]:
+        lines.append(
+            f"- 弱いページ: {page.get('url')} / score={page.get('score')} / "
+            f"改善: {', '.join(page.get('improvements', [])[:2]) or '改善提案なし'}"
+        )
+
+    for improvement in weakest_site.get("site_improvements", [])[:2]:
+        lines.append(f"- サイト横断改善: {improvement}")
+
+    return lines
+
+
 def load_seed_urls() -> list[str]:
     if target_urls_file_exists():
         return load_target_urls()
@@ -123,29 +168,33 @@ def build_rule_based_summary(
         if site_improvement:
             action_lines.append(f"- P2 site: {site_improvement}")
 
-    caution_lines = ["3. 注意点"]
+    diagnostic_lines = ["3. チャネル深掘り"]
+    diagnostic_lines.extend(_diagnostic_focus_lines(snapshot))
+
+    site_lines = ["4. サイト改善優先度"]
+    site_lines.extend(_site_focus_lines(url_results))
+
+    caution_lines = ["5. 注意点"]
     if alerts:
         for alert in alerts[:3]:
             caution_lines.append(f"- {alert['message']}")
     else:
         caution_lines.append("- 大きな異常は検出されていません。")
 
-    if url_results:
-        weakest_site = min(url_results, key=lambda item: item.get("score", 0))
-        caution_lines.append(
-            f"- サイト診断: {weakest_site.get('url')} の平均score={weakest_site.get('score')} "
-            f"({weakest_site.get('page_count', 0)}ページ)"
-        )
-        weakest_page = (weakest_site.get("weak_pages") or [None])[0]
-        if weakest_page:
-            caution_lines.append(
-                f"- 弱いページ: {weakest_page.get('url')} score={weakest_page.get('score')}"
-            )
-
     if llm_note:
         caution_lines.append(f"- LLM補足: {llm_note}")
 
-    return "\n".join(summary_lines + [""] + action_lines + [""] + caution_lines)
+    return "\n".join(
+        summary_lines
+        + [""]
+        + action_lines
+        + [""]
+        + diagnostic_lines
+        + [""]
+        + site_lines
+        + [""]
+        + caution_lines
+    )
 
 
 def build_llm_prompt(snapshot: dict, recommendations: list, compact_urls: list) -> str:
@@ -282,12 +331,19 @@ def run_cycle(
         url_results,
         skip_llm=skip_llm,
     )
+    deep_analysis = generate_deep_analysis(
+        snapshot,
+        recommendations,
+        url_results,
+        skip_llm=skip_llm,
+    )
 
     report = render_marketing_report(
         snapshot=snapshot,
         recommendations=recommendations,
         url_results=url_results,
         llm_summary=summary,
+        deep_analysis=deep_analysis,
     )
     path = save_report("daily_analysis", report)
     logger.info("Cycle completed successfully: %s", path)
