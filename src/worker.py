@@ -10,9 +10,9 @@ from src.llm_client import ask_llm
 from src.recommend import generate_recommendations
 from src.report import render_marketing_report, save_report
 from src.state import (
+    init_state,
     enqueue_url,
     fetch_next_urls,
-    init_state,
     mark_url_done,
     requeue_stale_done_urls,
 )
