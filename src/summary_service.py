@@ -1,4 +1,5 @@
 from src.llm_client import ask_llm
+from src.site_results_service import is_actionable_site_result
 
 
 def _alert_lines(alerts: list) -> str:
@@ -63,10 +64,11 @@ def _diagnostic_focus_lines(snapshot: dict) -> list[str]:
 
 
 def _site_focus_lines(url_results: list) -> list[str]:
-    if not url_results:
+    actionable_results = [result for result in url_results if is_actionable_site_result(result)]
+    if not actionable_results:
         return ["- 対象サイトの診断結果はまだありません。"]
 
-    weakest_site = min(url_results, key=lambda item: item.get("score", 0))
+    weakest_site = min(actionable_results, key=lambda item: item.get("score", 0))
     lines = [
         f"- 最も弱いサイト: {weakest_site.get('url')} / 平均score={weakest_site.get('score')} / "
         f"分析ページ数={weakest_site.get('page_count', 0)}"
@@ -118,8 +120,9 @@ def build_rule_based_summary(
     else:
         action_lines.append("- 優先度の高い改善提案はありません。")
 
-    if url_results and len(action_lines) < 4:
-        weakest_site = min(url_results, key=lambda item: item.get("score", 0))
+    actionable_results = [result for result in url_results if is_actionable_site_result(result)]
+    if actionable_results and len(action_lines) < 4:
+        weakest_site = min(actionable_results, key=lambda item: item.get("score", 0))
         site_improvement = (weakest_site.get("site_improvements") or [None])[0]
         if site_improvement:
             action_lines.append(f"- P2 site: {site_improvement}")

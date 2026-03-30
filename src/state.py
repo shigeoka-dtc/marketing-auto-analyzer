@@ -1,4 +1,5 @@
 import os
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -102,6 +103,24 @@ def init_state():
         """
         CREATE INDEX IF NOT EXISTS idx_url_queue_status_priority
         ON url_queue(status, priority, next_retry_at, last_analyzed_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS site_analysis_results (
+            url TEXT PRIMARY KEY,
+            analysis_status TEXT NOT NULL DEFAULT 'success',
+            score INTEGER,
+            page_count INTEGER NOT NULL DEFAULT 0,
+            analyzed_at TEXT NOT NULL,
+            result_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_site_analysis_results_status_analyzed_at
+        ON site_analysis_results(analysis_status, analyzed_at)
         """
     )
     conn.commit()
@@ -240,6 +259,26 @@ def fetch_next_urls(limit: int = 5):
     return claim_next_urls(limit=limit)
 
 
+def mark_urls_pending(urls: list[str]):
+    if not urls:
+        return
+
+    conn = get_conn()
+    placeholders = ",".join("?" for _ in urls)
+    conn.execute(
+        f"""
+        UPDATE url_queue
+        SET status = 'pending',
+            claimed_at = NULL,
+            next_retry_at = NULL
+        WHERE url IN ({placeholders})
+        """,
+        urls,
+    )
+    conn.commit()
+    conn.close()
+
+
 def mark_url_done(url: str):
     conn = get_conn()
     conn.execute(
@@ -256,6 +295,37 @@ def mark_url_done(url: str):
     )
     conn.commit()
     conn.close()
+
+
+def upsert_site_analysis_result(site_result: dict, analysis_status: str = "success") -> dict:
+    payload = dict(site_result)
+    payload["analysis_status"] = analysis_status
+    payload["analyzed_at"] = payload.get("analyzed_at") or _now_iso()
+
+    conn = get_conn()
+    conn.execute(
+        """
+        INSERT INTO site_analysis_results(url, analysis_status, score, page_count, analyzed_at, result_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(url) DO UPDATE SET
+            analysis_status = excluded.analysis_status,
+            score = excluded.score,
+            page_count = excluded.page_count,
+            analyzed_at = excluded.analyzed_at,
+            result_json = excluded.result_json
+        """,
+        (
+            payload.get("url"),
+            analysis_status,
+            payload.get("score"),
+            int(payload.get("page_count") or 0),
+            payload["analyzed_at"],
+            json.dumps(payload, ensure_ascii=False),
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return payload
 
 
 def mark_url_retry(url: str, error_message: str | None = None, delay_minutes: int = URL_RETRY_DELAY_MINUTES):
@@ -277,6 +347,46 @@ def mark_url_retry(url: str, error_message: str | None = None, delay_minutes: in
     )
     conn.commit()
     conn.close()
+
+
+def list_site_analysis_results(urls: list[str] | None = None) -> list[dict]:
+    conn = get_conn()
+    if urls is None:
+        rows = conn.execute(
+            """
+            SELECT url, analysis_status, score, page_count, analyzed_at, result_json
+            FROM site_analysis_results
+            ORDER BY analyzed_at DESC, url ASC
+            """
+        ).fetchall()
+    elif not urls:
+        rows = []
+    else:
+        placeholders = ",".join("?" for _ in urls)
+        rows = conn.execute(
+            f"""
+            SELECT url, analysis_status, score, page_count, analyzed_at, result_json
+            FROM site_analysis_results
+            WHERE url IN ({placeholders})
+            """,
+            urls,
+        ).fetchall()
+    conn.close()
+
+    results = []
+    for row in rows:
+        payload = json.loads(row["result_json"])
+        payload["analysis_status"] = row["analysis_status"]
+        payload["analyzed_at"] = row["analyzed_at"]
+        payload["score"] = row["score"]
+        payload["page_count"] = row["page_count"]
+        results.append(payload)
+
+    if urls is None:
+        return results
+
+    by_url = {result.get("url"): result for result in results}
+    return [by_url[url] for url in urls if url in by_url]
 
 
 def requeue_stale_done_urls(hours: int = 24):

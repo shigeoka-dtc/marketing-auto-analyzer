@@ -7,6 +7,7 @@ from src import analysis, db_utils, etl, state
 from src.deep_analysis import generate_deep_analysis
 from src.recommend import generate_recommendations
 from src.report import render_marketing_report
+from src.site_results_service import merge_site_results
 from src.summary_service import build_rule_based_summary, generate_summary
 from src.url_analyzer import analyze_site
 from src.url_targets import parse_target_urls
@@ -196,7 +197,9 @@ class AnalysisFlowTests(unittest.TestCase):
         )
 
         self.assertIn("## Strategic Diagnosis", report)
+        self.assertIn("## Evidence Base", report)
         self.assertIn("## 30-Day Roadmap", report)
+        self.assertIn("## 90-Day Transformation Program", report)
         self.assertIn("## AB Test Backlog", report)
         self.assertIn("## Measurement Plan", report)
         self.assertIn("## Expected Impact", report)
@@ -245,6 +248,7 @@ class AnalysisFlowTests(unittest.TestCase):
         self.assertEqual(deep_analysis["mode"], "rule-based")
         self.assertIn("## Executive Call", deep_analysis["body"])
         self.assertIn("## Copy Rewrite Pack", deep_analysis["body"])
+        self.assertIn("## 90-Day Transformation Program", deep_analysis["body"])
         self.assertIn("## Experiment Backlog", deep_analysis["body"])
         self.assertIn("## Channel-Specific Messaging Packs", deep_analysis["body"])
         self.assertIn("## Page Copy Packs", deep_analysis["body"])
@@ -292,6 +296,32 @@ class AnalysisFlowTests(unittest.TestCase):
         state.mark_url_retry("https://example.com/", error_message="boom", delay_minutes=0)
         retry_claim = state.claim_next_urls(limit=1)
         self.assertEqual(retry_claim, ["https://example.com/"])
+
+    def test_merge_site_results_uses_stored_and_pending_entries(self):
+        stored_result = state.upsert_site_analysis_result(
+            {
+                "url": "https://example.com/",
+                "score": 72,
+                "page_count": 3,
+                "pages": [],
+                "weak_pages": [],
+                "site_findings": ["stored result"],
+                "site_improvements": ["stored improvement"],
+                "errors": [],
+            },
+            analysis_status="success",
+        )
+
+        merged = merge_site_results(
+            ["https://example.com/", "https://example.com/faq"],
+            current_results=[],
+            stored_results=state.list_site_analysis_results(["https://example.com/"]),
+        )
+
+        self.assertEqual(merged[0]["url"], stored_result["url"])
+        self.assertEqual(merged[0]["analysis_status"], "success")
+        self.assertEqual(merged[1]["url"], "https://example.com/faq")
+        self.assertEqual(merged[1]["analysis_status"], "pending")
 
     @patch("src.url_analyzer.requests.get")
     def test_analyze_site_crawls_internal_pages(self, mock_get):

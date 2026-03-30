@@ -6,6 +6,8 @@ from src.deep_analysis import generate_deep_analysis
 from src.etl import load_csv_to_duckdb
 from src.recommend import generate_recommendations
 from src.report import render_marketing_report, save_report
+from src.site_results_service import build_site_error_result, compact_site_results
+from src.state import init_state, upsert_site_analysis_result
 from src.summary_service import generate_summary
 from src.url_analyzer import analyze_site
 from src.url_targets import load_target_urls
@@ -17,19 +19,18 @@ def collect_site_results(max_site_pages: int) -> list[dict]:
     results = []
     for url in load_target_urls():
         try:
-            results.append(analyze_site(url, max_pages=max_site_pages))
+            results.append(
+                upsert_site_analysis_result(
+                    analyze_site(url, max_pages=max_site_pages),
+                    analysis_status="success",
+                )
+            )
         except Exception as exc:
             results.append(
-                {
-                    "url": url,
-                    "score": 0,
-                    "page_count": 0,
-                    "pages": [],
-                    "weak_pages": [],
-                    "site_findings": [f"分析失敗: {exc}"],
-                    "site_improvements": ["URL到達性と robots 設定を確認する"],
-                    "errors": [{"url": url, "error": str(exc)}],
-                }
+                upsert_site_analysis_result(
+                    build_site_error_result(url, str(exc)),
+                    analysis_status="error",
+                )
             )
     return results
 
@@ -41,6 +42,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip-llm", action="store_true")
     args = parser.parse_args()
 
+    init_state()
     load_result = load_csv_to_duckdb(force=args.force_reload)
     df = read_mart()
     snapshot = build_analysis_snapshot(df)
@@ -50,23 +52,7 @@ if __name__ == "__main__":
         snapshot["alerts"],
     )
     site_results = collect_site_results(args.max_site_pages)
-    compact_urls = [
-        {
-            "url": result.get("url"),
-            "score": result.get("score"),
-            "page_count": result.get("page_count"),
-            "site_findings": result.get("site_findings", [])[:3],
-            "site_improvements": result.get("site_improvements", [])[:3],
-            "weak_pages": [
-                {
-                    "url": page.get("url"),
-                    "score": page.get("score"),
-                }
-                for page in result.get("weak_pages", [])[:2]
-            ],
-        }
-        for result in site_results
-    ]
+    compact_urls = compact_site_results(site_results)
     summary = generate_summary(
         snapshot,
         recommendations,
