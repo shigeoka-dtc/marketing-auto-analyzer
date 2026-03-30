@@ -5,6 +5,16 @@ from src.db_utils import locked_duckdb_connection
 DB_PATH = "db/marketing.duckdb"
 CSV_PATH = "data/raw/marketing.csv"
 DATASET_NAME = "marketing_csv"
+REQUIRED_COLUMNS = {
+    "date",
+    "channel",
+    "campaign",
+    "sessions",
+    "users",
+    "conversions",
+    "revenue",
+    "cost",
+}
 
 
 def _table_exists(conn, table_name: str) -> bool:
@@ -19,8 +29,8 @@ def _table_exists(conn, table_name: str) -> bool:
     return row is not None
 
 
-def _csv_signature() -> dict:
-    csv_path = Path(CSV_PATH)
+def _csv_signature(csv_path: Path | None = None) -> dict:
+    csv_path = csv_path or Path(CSV_PATH)
     stat = csv_path.stat()
     return {
         "csv_path": str(csv_path.resolve()),
@@ -104,29 +114,63 @@ def get_conn():
     return locked_duckdb_connection()
 
 
+def _validate_csv_input(conn, csv_path: Path):
+    if not csv_path.exists() or not csv_path.is_file():
+        raise FileNotFoundError(f"`{csv_path}` が見つかりません")
+    if csv_path.stat().st_size == 0:
+        raise ValueError(f"`{csv_path}` が空です")
+
+    try:
+        rows = conn.execute(
+            """
+            DESCRIBE
+            SELECT *
+            FROM read_csv_auto(?, sample_size=-1)
+            LIMIT 0
+            """,
+            [str(csv_path)],
+        ).fetchall()
+    except Exception as exc:
+        raise ValueError(f"`{csv_path}` のCSVヘッダーを読み取れません: {exc}") from exc
+
+    column_names = {str(row[0]).strip().lower() for row in rows}
+    missing_columns = sorted(REQUIRED_COLUMNS - column_names)
+    if missing_columns:
+        missing_text = ", ".join(missing_columns)
+        raise ValueError(f"`{csv_path}` に必須列が不足しています: {missing_text}")
+
+
 def load_csv_to_duckdb(force: bool = False):
-    signature = _csv_signature()
+    csv_path = Path(CSV_PATH)
 
     with get_conn() as conn:
+        _validate_csv_input(conn, csv_path)
+        signature = _csv_signature(csv_path)
         if not force and not _should_reload(conn, signature):
             return {"status": "skipped", **signature}
 
-        conn.execute(
-            """
-            CREATE OR REPLACE TABLE raw_marketing AS
-            SELECT
-                CAST(date AS DATE) AS date,
-                channel,
-                campaign,
-                CAST(sessions AS BIGINT) AS sessions,
-                CAST(users AS BIGINT) AS users,
-                CAST(conversions AS BIGINT) AS conversions,
-                CAST(revenue AS DOUBLE) AS revenue,
-                CAST(cost AS DOUBLE) AS cost
-            FROM read_csv_auto(?)
-            """,
-            [CSV_PATH],
-        )
+        try:
+            conn.execute(
+                """
+                CREATE OR REPLACE TABLE raw_marketing AS
+                SELECT
+                    CAST(date AS DATE) AS date,
+                    channel,
+                    campaign,
+                    CAST(sessions AS BIGINT) AS sessions,
+                    CAST(users AS BIGINT) AS users,
+                    CAST(conversions AS BIGINT) AS conversions,
+                    CAST(revenue AS DOUBLE) AS revenue,
+                    CAST(cost AS DOUBLE) AS cost
+                FROM read_csv_auto(?)
+                """,
+                [str(csv_path)],
+            )
+        except Exception as exc:
+            raise ValueError(
+                "`marketing.csv` の型変換に失敗しました。"
+                " `date,channel,campaign,sessions,users,conversions,revenue,cost` の形式を確認してください。"
+            ) from exc
 
         conn.execute(
             """

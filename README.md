@@ -13,6 +13,7 @@
 - Streamlit ダッシュボードから対象サイトの編集と即時診断が可能
 - 深掘り分析ではチャネル別訴求案、ページ別コピー案、実装チケット分解まで自動生成
 - 無料モードでは API なしで動作
+- private / loopback / link-local 宛てのURLは既定で拒否
 
 ## 無料モードでの起動
 
@@ -23,7 +24,7 @@
 ./start.sh
 ```
 
-ダッシュボードは `http://localhost:8501` です。
+ダッシュボードは `http://localhost:8501` です。既定では `127.0.0.1:8501` にのみ公開するため、同一マシンからだけアクセスできます。
 
 ## Docker 起動中の自動分析
 
@@ -33,6 +34,7 @@
 - 単発の分析でも、チャネル・異常・サイト改善優先度までルールベースで深めに出します
 - ローカルLLMを有効にすると、同じ1回の実行で深掘り分析、チャネル別訴求、H1/CTA案、実装チケットまで出力します
 - レポートには `Evidence Base` と `90-Day Transformation Program` が入り、事実と改善提案の境界を見やすくしています
+- 保存済みURLを更新して dashboard から保存した場合も、即再解析対象に戻します
 
 ## 対象サイトの登録場所
 
@@ -43,7 +45,9 @@ https://example.com/
 https://example.com/service
 ```
 
-このファイルはダッシュボード上から編集しても大丈夫です。保存後、worker のキューに自動反映されます。
+このファイルはダッシュボード上から編集しても大丈夫です。保存後、worker のキューに自動反映されます。既存URLを更新して保存した場合も `pending` に戻るため、次回 cycle から再解析されます。
+
+入力できるのは public な `http://` / `https://` URL だけです。`localhost`、`127.0.0.1`、社内IP、`host.docker.internal` などの private 宛てURLは拒否します。
 
 ## 実行コマンド
 
@@ -71,6 +75,7 @@ DEEP_ANALYSIS_ENABLED=true
 DEEP_ANALYSIS_NUM_PREDICT=1200
 TARGET_SITE_MAX_PAGES=8
 WORKER_INTERVAL_SECONDS=300
+ALLOWED_TARGET_HOSTS=example.com,www.example.com
 ```
 
 深掘り分析の設定:
@@ -81,6 +86,7 @@ WORKER_INTERVAL_SECONDS=300
 - `SQLITE_BUSY_TIMEOUT_MS=30000`: dashboard と worker の同時アクセス待ち時間
 - `URL_PROCESSING_STALE_MINUTES=30`: 取りっぱなしになった URL を再回収するまでの目安
 - `URL_RETRY_DELAY_MINUTES=15`: URL 分析失敗後に再試行するまでの待ち時間
+- `ALLOWED_TARGET_HOSTS=example.com,www.example.com`: 診断対象を許可ドメインに限定したい場合に指定
 
 `.env` を編集したら、再起動します。
 
@@ -106,6 +112,12 @@ GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/service-account.json
 - 分析対象URL: `data/raw/target_urls.txt`
 - 元データCSV: `data/raw/marketing.csv`
 - 出力レポート: `reports/`
+
+`marketing.csv` の必須列は次の8つです。
+
+```txt
+date,channel,campaign,sessions,users,conversions,revenue,cost
+```
 
 ## 主なファイル
 

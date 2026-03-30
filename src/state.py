@@ -25,12 +25,10 @@ def _resolve_state_db_path() -> Path:
     if requested.exists():
         if os.access(requested, os.W_OK):
             return requested
-    elif os.access(requested.parent, os.W_OK):
+        raise RuntimeError(f"STATE_DB に書き込めません: {requested}")
+    if os.access(requested.parent, os.W_OK):
         return requested
-
-    fallback = Path("db/state.local.sqlite")
-    fallback.parent.mkdir(parents=True, exist_ok=True)
-    return fallback
+    raise RuntimeError(f"STATE_DB の親ディレクトリに書き込めません: {requested.parent}")
 
 
 def get_conn():
@@ -165,9 +163,10 @@ def enqueue_url(url: str, priority: int = 100):
     conn.close()
 
 
-def sync_url_queue(urls: list[str], base_priority: int = 10):
+def sync_url_queue(urls: list[str], base_priority: int = 10, reset_existing: bool = False):
     conn = get_conn()
     normalized_urls = [url for url in urls if url]
+    reset_flag = 1 if reset_existing else 0
 
     if normalized_urls:
         placeholders = ",".join("?" for _ in normalized_urls)
@@ -181,9 +180,15 @@ def sync_url_queue(urls: list[str], base_priority: int = 10):
                 INSERT INTO url_queue(url, priority, status, retry_count)
                 VALUES (?, ?, 'pending', 0)
                 ON CONFLICT(url) DO UPDATE SET
-                    priority = excluded.priority
+                    priority = excluded.priority,
+                    status = CASE WHEN ? = 1 THEN 'pending' ELSE url_queue.status END,
+                    last_analyzed_at = CASE WHEN ? = 1 THEN NULL ELSE url_queue.last_analyzed_at END,
+                    claimed_at = CASE WHEN ? = 1 THEN NULL ELSE url_queue.claimed_at END,
+                    retry_count = CASE WHEN ? = 1 THEN 0 ELSE url_queue.retry_count END,
+                    next_retry_at = CASE WHEN ? = 1 THEN NULL ELSE url_queue.next_retry_at END,
+                    last_error = CASE WHEN ? = 1 THEN NULL ELSE url_queue.last_error END
                 """,
-                (url, base_priority + offset),
+                (url, base_priority + offset, reset_flag, reset_flag, reset_flag, reset_flag, reset_flag, reset_flag),
             )
     else:
         conn.execute("DELETE FROM url_queue")

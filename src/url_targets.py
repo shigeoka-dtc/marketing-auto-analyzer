@@ -1,4 +1,5 @@
 import os
+import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -68,5 +69,12 @@ def target_urls_file_exists() -> bool:
 def save_target_urls(urls: list[str]) -> str:
     path = Path(TARGET_URLS_FILE)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(target_urls_to_text(urls), encoding="utf-8")
+    fd, temp_path = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(target_urls_to_text(urls))
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
     return str(path)

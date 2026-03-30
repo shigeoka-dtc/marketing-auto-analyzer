@@ -9,9 +9,10 @@ from src.etl import load_csv_to_duckdb
 from src.recommend import generate_recommendations
 from src.state import init_state, list_url_queue, sync_url_queue
 from src.url_analyzer import analyze_site
+from src.url_security import assert_safe_target_url
 from src.url_targets import (
     load_target_urls,
-    parse_target_urls,
+    normalize_target_url,
     save_target_urls,
     target_urls_to_text,
 )
@@ -97,6 +98,30 @@ def _load_dashboard_data(refresh_token: int = 0) -> dict:
 def _invalidate_dashboard_data():
     _load_dashboard_data.clear()
     st.session_state["dashboard_refresh_token"] = st.session_state.get("dashboard_refresh_token", 0) + 1
+
+
+def _parse_target_url_input(text: str) -> tuple[list[str], list[str]]:
+    urls = []
+    invalid_lines = []
+    seen = set()
+
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        normalized = normalize_target_url(line)
+        if not normalized:
+            invalid_lines.append(f"{line_number}行目: {line}")
+            continue
+
+        if normalized in seen:
+            continue
+
+        seen.add(normalized)
+        urls.append(normalized)
+
+    return urls, invalid_lines
 
 
 st.set_page_config(page_title="Marketing Auto Analyzer", layout="wide")
@@ -242,7 +267,7 @@ else:
     st.info("改善提案はありません。")
 
 st.subheader("対象サイト設定")
-st.caption("1行に1URLで登録してください。worker はこの一覧を自動で巡回し、ダッシュボードは軽量表示に専念します。")
+st.caption("1行に1URLで登録してください。public な http/https のみ許可し、保存すると worker が即再解析できる状態に戻します。")
 
 url_text = st.text_area(
     "対象サイトURL一覧",
@@ -252,12 +277,22 @@ url_text = st.text_area(
 )
 
 if st.button("対象サイト一覧を保存"):
-    parsed_urls = parse_target_urls(url_text)
-    save_target_urls(parsed_urls)
-    sync_url_queue(parsed_urls, base_priority=10)
-    _invalidate_dashboard_data()
-    st.success(f"{len(parsed_urls)}件の対象サイトを保存しました。")
-    st.rerun()
+    parsed_urls, invalid_lines = _parse_target_url_input(url_text)
+    invalid_urls = [f"- {line}: URL形式が不正です" for line in invalid_lines]
+    for url in parsed_urls:
+        try:
+            assert_safe_target_url(url)
+        except ValueError as exc:
+            invalid_urls.append(f"- {url}: {exc}")
+
+    if invalid_urls:
+        st.error("保存できないURLがあります。\n" + "\n".join(invalid_urls))
+    else:
+        save_target_urls(parsed_urls)
+        sync_url_queue(parsed_urls, base_priority=10, reset_existing=True)
+        _invalidate_dashboard_data()
+        st.success(f"{len(parsed_urls)}件の対象サイトを保存しました。")
+        st.rerun()
 
 if queue_rows:
     queue_df = pd.DataFrame(queue_rows)
@@ -272,6 +307,7 @@ site_page_limit = st.slider("巡回ページ数", min_value=1, max_value=10, val
 
 if st.button("サイト全体を診断"):
     try:
+        assert_safe_target_url(site_url)
         result = analyze_site(site_url, max_pages=site_page_limit)
         weakest_page = (result.get("weak_pages") or [None])[0]
 
