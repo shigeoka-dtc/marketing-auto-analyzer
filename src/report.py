@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.site_results_service import is_actionable_site_result, site_result_status
+
 
 def save_report(title: str, body: str):
     Path("reports").mkdir(parents=True, exist_ok=True)
@@ -73,9 +75,42 @@ def _opportunity_channels(diagnostics: pd.DataFrame | None) -> pd.DataFrame:
 
 
 def _weakest_site(url_results: list) -> dict | None:
-    if not url_results:
+    actionable_results = [result for result in url_results if is_actionable_site_result(result)]
+    if not actionable_results:
         return None
-    return min(url_results, key=lambda item: item.get("score", 0))
+    return min(actionable_results, key=lambda item: item.get("score", 0))
+
+
+def _fmt_analysis_status(value: str) -> str:
+    return {
+        "success": "analyzed",
+        "error": "error",
+        "pending": "pending",
+    }.get(value, value or "-")
+
+
+def _build_evidence_base(snapshot: dict, url_results: list, deep_analysis_mode: str) -> str:
+    status_counts = {"success": 0, "error": 0, "pending": 0}
+    analyzed_at_values = []
+    for result in url_results:
+        status = site_result_status(result)
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if result.get("analyzed_at"):
+            analyzed_at_values.append(result["analyzed_at"])
+
+    latest_analyzed_at = max(analyzed_at_values) if analyzed_at_values else "-"
+    latest_snapshot = snapshot.get("latest", {})
+
+    return "\n".join(
+        [
+            f"- KPI基準日: {latest_snapshot.get('latest_date') or '-'}",
+            f"- 対象サイト数: {len(url_results)}",
+            f"- サイト分析カバレッジ: analyzed={status_counts.get('success', 0)} / error={status_counts.get('error', 0)} / pending={status_counts.get('pending', 0)}",
+            f"- 直近のサイト分析時刻: {latest_analyzed_at}",
+            f"- 深掘り分析モード: {deep_analysis_mode}",
+            "- 解釈ルール: KPI表とSite Resultsは事実、Strategic Diagnosis以降はその事実にもとづく解釈と改善提案",
+        ]
+    )
 
 
 def _build_executive_diagnosis(snapshot: dict, recommendations: list, url_results: list) -> str:
@@ -228,6 +263,41 @@ def _build_roadmap_rows(recommendations: list, url_results: list) -> list[list[s
             "2-4週間",
             "再現性構築",
             "流入キーワード別の訴求分岐、ABテスト運用、計測整備を行い勝ちパターンを横展開",
+            "CPA / ROAS / MQL数",
+        ],
+    ]
+
+
+def _build_90_day_program_rows(recommendations: list, url_results: list) -> list[list[str]]:
+    weakest_site = _weakest_site(url_results)
+    weakest_page = None
+    if weakest_site and weakest_site.get("weak_pages"):
+        weakest_page = weakest_site["weak_pages"][0]
+
+    top_action = recommendations[0]["action"] if recommendations else "監視体制を整える"
+    weak_page_label = weakest_page.get("url") if weakest_page else "主要LP"
+    weakest_site_label = weakest_site.get("url") if weakest_site else "主要サイト"
+
+    return [
+        [
+            "0-30日",
+            "現状是正",
+            f"{weak_page_label} のFV/H1/CTAと、{top_action} を最優先で実行する",
+            "マーケ / 制作 / 広告運用",
+            "直帰率 / CTA CTR / CVR",
+        ],
+        [
+            "31-60日",
+            "信頼形成と計測",
+            f"{weakest_site_label} に事例、FAQ、中間CV、イベント計測を横断導入する",
+            "マーケ / 営業 / 分析",
+            "フォーム開始率 / 完了率 / 事例到達率",
+        ],
+        [
+            "61-90日",
+            "再現性構築",
+            "流入別訴求分岐、ABテスト定着、週次レビューを運用に組み込む",
+            "責任者 / 分析 / 広告運用",
             "CPA / ROAS / MQL数",
         ],
     ]
@@ -395,8 +465,10 @@ def render_marketing_report(
         site_rows.append(
             [
                 result.get("url"),
+                _fmt_analysis_status(site_result_status(result)),
+                result.get("analyzed_at") or "-",
                 result.get("page_count", 0),
-                result.get("score", "-"),
+                result.get("score", "-") if result.get("score") is not None else "-",
                 ", ".join(result.get("site_findings", [])[:4]) or "-",
                 ", ".join(result.get("site_improvements", [])[:4]) or "-",
             ]
@@ -422,6 +494,7 @@ def render_marketing_report(
         error_lines = ["- サイト巡回エラーなし"]
 
     roadmap_rows = _build_roadmap_rows(recommendations, url_results)
+    transformation_rows = _build_90_day_program_rows(recommendations, url_results)
     ab_test_rows = _build_ab_test_rows(url_results)
     deep_analysis = deep_analysis or {}
     deep_analysis_mode = deep_analysis.get("mode", "n/a")
@@ -434,6 +507,9 @@ Generated: {datetime.now(UTC).isoformat()}
 
 ## Latest Snapshot
 {chr(10).join(latest_lines)}
+
+## Evidence Base
+{_build_evidence_base(snapshot, url_results, deep_analysis_mode)}
 
 ## Period KPI
 {chr(10).join(kpi_lines)}
@@ -455,7 +531,7 @@ Generated: {datetime.now(UTC).isoformat()}
 
 ## Site Results
 {_markdown_table(
-    ["Site", "Pages", "Avg Score", "Findings", "Improvements"],
+    ["Site", "Status", "Analyzed At", "Pages", "Avg Score", "Findings", "Improvements"],
     site_rows,
 )}
 
@@ -482,6 +558,12 @@ Generated: {datetime.now(UTC).isoformat()}
 {_markdown_table(
     ["Phase", "Goal", "What To Change", "KPI"],
     roadmap_rows,
+)}
+
+## 90-Day Transformation Program
+{_markdown_table(
+    ["Window", "Theme", "Focus", "Owner", "Success Signal"],
+    transformation_rows,
 )}
 
 ## AB Test Backlog

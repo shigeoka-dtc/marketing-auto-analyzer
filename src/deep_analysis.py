@@ -2,6 +2,7 @@ import os
 from urllib.parse import urlparse
 
 from src.llm_client import ask_llm
+from src.site_results_service import is_actionable_site_result, site_result_status
 
 DEEP_ANALYSIS_ENABLED = os.getenv("DEEP_ANALYSIS_ENABLED", "true").lower() not in {"0", "false", "no"}
 DEEP_ANALYSIS_NUM_PREDICT = int(os.getenv("DEEP_ANALYSIS_NUM_PREDICT", "1200"))
@@ -12,9 +13,10 @@ def _top_recommendations(recommendations: list) -> list[dict]:
 
 
 def _weakest_site(url_results: list) -> dict | None:
-    if not url_results:
+    actionable_results = [result for result in url_results if is_actionable_site_result(result)]
+    if not actionable_results:
         return None
-    return min(url_results, key=lambda item: item.get("score", 0))
+    return min(actionable_results, key=lambda item: item.get("score", 0))
 
 
 def _unique_channels(recommendations: list, diagnostics) -> list[str]:
@@ -71,6 +73,8 @@ def _site_context(url_results: list) -> list[dict]:
                 "url": site.get("url"),
                 "score": site.get("score"),
                 "page_count": site.get("page_count"),
+                "analysis_status": site_result_status(site),
+                "analyzed_at": site.get("analyzed_at"),
                 "site_findings": site.get("site_findings", [])[:5],
                 "site_improvements": site.get("site_improvements", [])[:5],
                 "weak_pages": [
@@ -188,6 +192,12 @@ def build_deep_analysis_prompt(snapshot: dict, recommendations: list, url_result
 - 1-2週間
 - 2-4週間
 - それぞれ担当、実装内容、KPI
+
+## 90-Day Transformation Program
+- 0-30日
+- 31-60日
+- 61-90日
+- 各フェーズのテーマ、責任者、成功指標を書く
 
 ## Experiment Backlog
 - ABテストを最低6本
@@ -421,6 +431,11 @@ def build_rule_based_deep_analysis(snapshot: dict, recommendations: list, url_re
             "- 0-3日: 担当=マーケ/制作。H1、サブコピー、主CTA、ヒーロー下の信頼要素を修正。KPI=直帰率/CTA CTR/フォーム開始率",
             "- 1-2週間: 担当=マーケ/営業/制作。事例の上段化、FAQ追加、資料DL導線追加。KPI=CVR/フォーム完了率/事例到達率",
             "- 2-4週間: 担当=マーケ/分析。流入別訴求分岐、ABテスト、週次レビューを開始。KPI=CPA/ROAS/MQL数",
+            "",
+            "## 90-Day Transformation Program",
+            "- 0-30日: テーマ=現状是正。責任者=マーケ責任者。成功指標=直帰率, CTA CTR, CVR",
+            "- 31-60日: テーマ=信頼形成と計測整備。責任者=マーケ/営業/分析。成功指標=フォーム開始率, 完了率, 事例到達率",
+            "- 61-90日: テーマ=再現性構築。責任者=責任者/広告運用/分析。成功指標=CPA, ROAS, MQL数",
             "",
             "## Experiment Backlog",
             "- 1. FV見出し: 現状 vs 課題解決型H1 / 指標=直帰率",

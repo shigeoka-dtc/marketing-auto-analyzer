@@ -69,23 +69,69 @@ def _site_pages_frame(site_result: dict) -> pd.DataFrame:
     return pd.DataFrame(pages)
 
 
+@st.cache_resource(show_spinner=False)
+def _ensure_state():
+    init_state()
+
+
+@st.cache_data(show_spinner=False, ttl=30)
+def _load_dashboard_data(refresh_token: int = 0) -> dict:
+    del refresh_token
+    load_result = load_csv_to_duckdb()
+    df = read_mart()
+    snapshot = build_analysis_snapshot(df)
+    recs = generate_recommendations(
+        snapshot["channels"],
+        snapshot["diagnostics"],
+        snapshot["alerts"],
+    )
+    return {
+        "load_result": load_result,
+        "snapshot": snapshot,
+        "recommendations": recs,
+        "target_urls": load_target_urls(),
+        "queue_rows": list_url_queue(),
+    }
+
+
+def _invalidate_dashboard_data():
+    _load_dashboard_data.clear()
+    st.session_state["dashboard_refresh_token"] = st.session_state.get("dashboard_refresh_token", 0) + 1
+
+
 st.set_page_config(page_title="Marketing Auto Analyzer", layout="wide")
 st.title("Marketing Auto Analyzer")
 st.caption("無料モードでは CSV 分析とサイト診断をAPIなしで自動化できます。ローカルLLMを使う場合だけ Ollama を有効化してください。")
 
-init_state()
-load_result = load_csv_to_duckdb()
-df = read_mart()
-snapshot = build_analysis_snapshot(df)
+_ensure_state()
+
+controls = st.columns([1, 5])
+with controls[0]:
+    if st.button("再読込", use_container_width=True):
+        _invalidate_dashboard_data()
+        st.rerun()
+
+try:
+    dashboard_data = _load_dashboard_data(st.session_state.get("dashboard_refresh_token", 0))
+except FileNotFoundError:
+    st.error("`data/raw/marketing.csv` が見つかりません。CSV を配置してから再読込してください。")
+    st.stop()
+except Exception as exc:
+    st.error(f"ダッシュボード初期化でエラー: {exc}")
+    st.stop()
+
+load_result = dashboard_data["load_result"]
+snapshot = dashboard_data["snapshot"]
+recs = dashboard_data["recommendations"]
+target_urls = dashboard_data["target_urls"]
+queue_rows = dashboard_data["queue_rows"]
+
 latest = snapshot["latest"]
 kpis = snapshot["kpis"]
 daily = snapshot["daily"]
 channels = snapshot["channels"]
 diagnostics = snapshot["diagnostics"]
 alerts = snapshot["alerts"]
-recs = generate_recommendations(channels, diagnostics, alerts)
-target_urls = load_target_urls()
-queue_rows = list_url_queue()
 
 latest_metrics = latest.get("latest", {})
 latest_delta = latest.get("delta_vs_previous", {})
@@ -196,7 +242,7 @@ else:
     st.info("改善提案はありません。")
 
 st.subheader("対象サイト設定")
-st.caption("1行に1URLで登録してください。worker はこの一覧を自動で巡回し、Docker起動中にレポートを更新します。")
+st.caption("1行に1URLで登録してください。worker はこの一覧を自動で巡回し、ダッシュボードは軽量表示に専念します。")
 
 url_text = st.text_area(
     "対象サイトURL一覧",
@@ -209,6 +255,7 @@ if st.button("対象サイト一覧を保存"):
     parsed_urls = parse_target_urls(url_text)
     save_target_urls(parsed_urls)
     sync_url_queue(parsed_urls, base_priority=10)
+    _invalidate_dashboard_data()
     st.success(f"{len(parsed_urls)}件の対象サイトを保存しました。")
     st.rerun()
 

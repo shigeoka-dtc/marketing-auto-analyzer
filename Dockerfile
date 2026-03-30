@@ -20,6 +20,6 @@ RUN pip install --upgrade pip setuptools wheel && \
 
 COPY . .
 
-RUN chmod +x /app/run.sh
+RUN chmod +x /app/run.sh /app/run_dashboard.sh /app/run_worker.sh
 
-CMD ["/bin/bash", "/app/run.sh"]
+CMD ["/bin/bash", "/app/run_dashboard.sh"]
