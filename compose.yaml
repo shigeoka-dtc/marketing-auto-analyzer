@@ -1,32 +1,38 @@
 services:
   worker:
     build: .
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
     restart: unless-stopped
     volumes:
       - ./data:/app/data
       - ./db:/app/db
       - ./reports:/app/reports
-      - ./state:/app/state
     environment:
+      STATE_DB: /app/db/state.runtime.sqlite
       OLLAMA_URL: http://host.docker.internal:11434
       OLLAMA_MODEL: phi3:mini
-      OLLAMA_TIMEOUT: 300
+      OLLAMA_ENABLED: "true"
+      OLLAMA_TIMEOUT: 45
+      OLLAMA_NUM_PREDICT: 300
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: python -m src.worker
 
   dashboard:
     build: .
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
     restart: unless-stopped
     volumes:
       - ./data:/app/data
       - ./db:/app/db
       - ./reports:/app/reports
-      - ./state:/app/state
     environment:
+      STATE_DB: /app/db/state.runtime.sqlite
       OLLAMA_URL: http://host.docker.internal:11434
       OLLAMA_MODEL: phi3:mini
-      OLLAMA_TIMEOUT: 300
+      OLLAMA_ENABLED: "true"
+      OLLAMA_TIMEOUT: 45
+      OLLAMA_NUM_PREDICT: 300
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

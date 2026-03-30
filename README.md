@@ -134,3 +134,107 @@ marketing-auto-analyzer/
    ├─ report.py
    ├─ llm_client.py
    └─ worker.py
+```
+
+---
+
+## セットアップ
+
+### ローカル
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Docker Compose
+
+```bash
+LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) docker compose up --build
+```
+
+---
+
+## 起動方法
+
+### 手動レポート生成
+
+```bash
+.venv/bin/python main.py
+```
+
+### ダッシュボード
+
+```bash
+.venv/bin/streamlit run app.py
+```
+
+### worker を1回だけ実行
+
+```bash
+.venv/bin/python -m src.worker --once
+```
+
+LLM を使わずに完走確認したい場合:
+
+```bash
+.venv/bin/python -m src.worker --once --skip-llm
+```
+
+---
+
+## 実装済み機能
+
+- `marketing.csv` の DuckDB 取り込み
+- CSV更新がない場合の ETL スキップ
+- 日次集計、チャネル別集計、最新日スナップショット
+- 前日比ベースの異常検知
+- チャネルごとの状態判定 (`critical / warning / opportunity / stable`)
+- 優先度付き改善提案 (`P1 / P2 / P3`)
+- Markdown レポート保存
+- Streamlit ダッシュボード表示
+- 単一 URL の LP 診断
+- worker の継続実行と URL キュー処理
+- LLM が使えない場合のルールベース要約フォールバック
+
+---
+
+## 確認できた分析結果
+
+サンプルの `data/raw/marketing.csv` では、以下のような出力を確認済みです。
+
+- `google` は増額テスト候補
+- `meta` は ROAS が低いため改善対象
+- `main.py` 実行で Markdown レポート生成
+- `src.worker --once --skip-llm` で worker 完走
+
+---
+
+## 発生した問題と対処
+
+- DuckDB の同時アクセスでロック競合
+  - ファイルロックを追加し、CSV 未更新時は ETL をスキップ
+- Docker 実行後に `state.sqlite` が root 所有になりローカル実行で書き込み失敗
+  - `STATE_DB` 環境変数対応と `db/state.local.sqlite` へのフォールバックを追加
+  - Compose では `db/state.runtime.sqlite` を使うようにして権限衝突を回避
+- Ollama 応答待ちで worker が長く止まる
+  - タイムアウト短縮と、LLM 不可時のルールベース要約を追加
+
+---
+
+## 現在の課題
+
+- URL 診断はまだ単一ページ中心
+- LLM 要約品質はモデル依存
+- GA4 / Search Console / 広告API 連携は未着手
+- テストは分析フローのスモークテスト中心で、網羅性はまだ低い
+
+---
+
+## 今後の設計方針
+
+- 外部データソースを順次追加
+- URL キューを複数 URL / ドメイン巡回に拡張
+- 施策優先度の根拠をより定量化
+- レポート配信先を Slack / メールなどへ拡張
