@@ -1,2 +1,3 @@
 # 1行に1URLで登録してください
 https://service.daitecjp.com/index.php/manual-production/
+https://service.daitecjp.com/

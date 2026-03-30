@@ -10,15 +10,16 @@
 - 1サイトあたり複数ページを分析し、サイト全体の改善案を出力
 - Markdown レポートを `reports/` に保存
 - Streamlit ダッシュボードから対象サイトの編集と即時診断が可能
+- 深掘り分析ではチャネル別訴求案、ページ別コピー案、実装チケット分解まで自動生成
 - 無料モードでは API なしで動作
 
 ## 無料モードでの起動
 
 そのまま無料で動かす場合は API 不要です。初期状態では Ollama も無効です。
+普段の実行はこれだけで大丈夫です。
 
 ```bash
-LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) docker compose up --build -d worker dashboard
-docker compose logs -f worker
+./start.sh
 ```
 
 ダッシュボードは `http://localhost:8501` です。
@@ -28,6 +29,8 @@ docker compose logs -f worker
 - `worker` が起動中、`marketing.csv` と対象サイトを定期的に再分析します
 - `dashboard` は起動時に `python main.py` を1回実行してから画面を開きます
 - 継続間隔はデフォルトで `600` 秒です
+- 単発の分析でも、チャネル・異常・サイト改善優先度までルールベースで深めに出します
+- ローカルLLMを有効にすると、同じ1回の実行で深掘り分析、チャネル別訴求、H1/CTA案、実装チケットまで出力します
 
 ## 対象サイトの登録場所
 
@@ -40,21 +43,13 @@ https://example.com/service
 
 このファイルはダッシュボード上から編集しても大丈夫です。保存後、worker のキューに自動反映されます。
 
-## よく使うコマンド
+## 実行コマンド
 
 ```bash
-# worker を1回だけ実行
-LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) docker compose run --rm worker python -m src.worker --once
-
-# LLM なしで worker を1回実行
-LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) docker compose run --rm worker python -m src.worker --once --skip-llm
-
-# dashboard だけ起動
-LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) docker compose up -d dashboard
-
-# レポート確認
-ls -la reports
+./start.sh
 ```
+
+この1コマンドで、分析実行、改善提案生成、対象サイト診断、ダッシュボード起動までまとめて行います。
 
 ## ローカルLLMを使いたい場合
 
@@ -70,14 +65,22 @@ cp .env.example .env
 OLLAMA_ENABLED=true
 OLLAMA_URL=http://host.docker.internal:11434
 OLLAMA_MODEL=phi3:mini
+DEEP_ANALYSIS_ENABLED=true
+DEEP_ANALYSIS_NUM_PREDICT=1200
 TARGET_SITE_MAX_PAGES=8
 WORKER_INTERVAL_SECONDS=300
 ```
 
+深掘り分析の設定:
+
+- `DEEP_ANALYSIS_ENABLED=true`: 深掘り分析セクションを有効化
+- `DEEP_ANALYSIS_NUM_PREDICT=1200`: ローカルLLMに渡す出力量の目安
+- `OLLAMA_NUM_PREDICT=300`: 通常要約の出力量
+
 `.env` を編集したら、再起動します。
 
 ```bash
-docker compose up --build -d worker dashboard
+./start.sh
 ```
 
 ## API を使うならどこに置くか
@@ -104,6 +107,7 @@ GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/service-account.json
 - [app.py](/home/nshigeoka/marketing-auto-analyzer/app.py)
 - [main.py](/home/nshigeoka/marketing-auto-analyzer/main.py)
 - [compose.yaml](/home/nshigeoka/marketing-auto-analyzer/compose.yaml)
+- [start.sh](/home/nshigeoka/marketing-auto-analyzer/start.sh)
 - [src/worker.py](/home/nshigeoka/marketing-auto-analyzer/src/worker.py)
 - [src/url_analyzer.py](/home/nshigeoka/marketing-auto-analyzer/src/url_analyzer.py)
 - [src/url_targets.py](/home/nshigeoka/marketing-auto-analyzer/src/url_targets.py)

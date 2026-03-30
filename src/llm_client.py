@@ -9,7 +9,7 @@ OLLAMA_ENABLED = os.getenv("OLLAMA_ENABLED", "false").lower() not in {"0", "fals
 OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "300"))
 
 
-def ask_llm(prompt: str) -> str:
+def ask_llm(prompt: str, *, num_predict: int | None = None, model: str | None = None) -> str:
     if not OLLAMA_ENABLED:
         return "[LLM skipped] OLLAMA_ENABLED=false"
 
@@ -17,11 +17,11 @@ def ask_llm(prompt: str) -> str:
         response = requests.post(
             f"{OLLAMA_URL}/api/generate",
             json={
-                "model": OLLAMA_MODEL,
+                "model": model or OLLAMA_MODEL,
                 "prompt": prompt,
                 "stream": False,
                 "options": {
-                    "num_predict": OLLAMA_NUM_PREDICT,
+                    "num_predict": num_predict or OLLAMA_NUM_PREDICT,
                 },
             },
             timeout=(5, OLLAMA_TIMEOUT),

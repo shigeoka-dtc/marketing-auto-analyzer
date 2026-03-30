@@ -4,7 +4,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src import analysis, db_utils, etl
+from src.deep_analysis import generate_deep_analysis
 from src.recommend import generate_recommendations
+from src.report import render_marketing_report
 from src.url_analyzer import analyze_site
 from src.url_targets import parse_target_urls
 from src.worker import build_rule_based_summary, generate_summary
@@ -134,11 +136,114 @@ class AnalysisFlowTests(unittest.TestCase):
 
         self.assertIn("1. 現状サマリー", summary)
         self.assertIn("2. 優先アクション", summary)
-        self.assertIn("3. 注意点", summary)
+        self.assertIn("3. チャネル深掘り", summary)
+        self.assertIn("4. サイト改善優先度", summary)
+        self.assertIn("5. 注意点", summary)
         self.assertIn("LLM補足", summary)
 
         direct_summary = build_rule_based_summary(snapshot, recommendations, [], None)
         self.assertIn("最新日: 2026-03-22", direct_summary)
+        self.assertIn("3. チャネル深掘り", direct_summary)
+        self.assertIn("4. サイト改善優先度", direct_summary)
+
+    def test_render_marketing_report_contains_strategic_sections(self):
+        etl.load_csv_to_duckdb(force=True)
+        df = analysis.read_mart()
+        snapshot = analysis.build_analysis_snapshot(df)
+        recommendations = generate_recommendations(
+            snapshot["channels"],
+            snapshot["diagnostics"],
+            snapshot["alerts"],
+        )
+        site_results = [
+            {
+                "url": "https://example.com/",
+                "score": 72,
+                "page_count": 3,
+                "site_findings": ["score 70未満ページ 1 件", "CTA不足ページ 1 件"],
+                "site_improvements": ["最優先で H1・CTA・見出し構成を改善する"],
+                "weak_pages": [
+                    {
+                        "url": "https://example.com/service",
+                        "score": 55,
+                        "cta_count": 0,
+                        "findings": ["CTAなし", "h1が抽象的"],
+                        "improvements": ["ファーストビューと本文末に主CTAを追加する"],
+                    }
+                ],
+                "errors": [],
+            }
+        ]
+
+        deep_analysis = generate_deep_analysis(
+            snapshot,
+            recommendations,
+            site_results,
+            skip_llm=True,
+        )
+
+        report = render_marketing_report(
+            snapshot=snapshot,
+            recommendations=recommendations,
+            url_results=site_results,
+            llm_summary="rule-based summary",
+            deep_analysis=deep_analysis,
+        )
+
+        self.assertIn("## Strategic Diagnosis", report)
+        self.assertIn("## 30-Day Roadmap", report)
+        self.assertIn("## AB Test Backlog", report)
+        self.assertIn("## Measurement Plan", report)
+        self.assertIn("## Expected Impact", report)
+        self.assertIn("## Deep AI Analysis", report)
+        self.assertIn("## Copy Rewrite Pack", report)
+        self.assertIn("## Channel-Specific Messaging Packs", report)
+        self.assertIn("## Page Copy Packs", report)
+        self.assertIn("## Implementation Ticket Breakdown", report)
+
+    def test_generate_deep_analysis_falls_back_to_rule_based(self):
+        etl.load_csv_to_duckdb(force=True)
+        df = analysis.read_mart()
+        snapshot = analysis.build_analysis_snapshot(df)
+        recommendations = generate_recommendations(
+            snapshot["channels"],
+            snapshot["diagnostics"],
+            snapshot["alerts"],
+        )
+        site_results = [
+            {
+                "url": "https://example.com/",
+                "score": 72,
+                "page_count": 3,
+                "site_findings": ["score 70未満ページ 1 件", "CTA不足ページ 1 件"],
+                "site_improvements": ["最優先で H1・CTA・見出し構成を改善する"],
+                "weak_pages": [
+                    {
+                        "url": "https://example.com/service",
+                        "score": 55,
+                        "cta_count": 0,
+                        "findings": ["CTAなし", "h1が抽象的"],
+                        "improvements": ["ファーストビューと本文末に主CTAを追加する"],
+                    }
+                ],
+                "errors": [],
+            }
+        ]
+
+        deep_analysis = generate_deep_analysis(
+            snapshot,
+            recommendations,
+            site_results,
+            skip_llm=True,
+        )
+
+        self.assertEqual(deep_analysis["mode"], "rule-based")
+        self.assertIn("## Executive Call", deep_analysis["body"])
+        self.assertIn("## Copy Rewrite Pack", deep_analysis["body"])
+        self.assertIn("## Experiment Backlog", deep_analysis["body"])
+        self.assertIn("## Channel-Specific Messaging Packs", deep_analysis["body"])
+        self.assertIn("## Page Copy Packs", deep_analysis["body"])
+        self.assertIn("## Implementation Ticket Breakdown", deep_analysis["body"])
 
     def test_parse_target_urls_normalizes_and_deduplicates(self):
         text = """
