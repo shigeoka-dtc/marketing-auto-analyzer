@@ -1,9 +1,12 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src import analysis, db_utils, etl
 from src.recommend import generate_recommendations
+from src.url_analyzer import analyze_site
+from src.url_targets import parse_target_urls
 from src.worker import build_rule_based_summary, generate_summary
 
 
@@ -15,6 +18,53 @@ CSV_TEXT = """date,channel,campaign,sessions,users,conversions,revenue,cost
 2026-03-22,google,campaign_a,1400,1000,51,220000,76000
 2026-03-22,meta,campaign_b,1000,790,18,80000,70000
 """
+
+SITE_HTML = {
+    "https://example.com/": """
+        <html>
+          <head><title>業務改善サービス</title></head>
+          <body>
+            <h1>業務改善サービス</h1>
+            <h2>選ばれる理由</h2>
+            <h2>導入フロー</h2>
+            <a href="/service">サービス詳細</a>
+            <a href="/faq">よくある質問</a>
+            <a href="/contact">お問い合わせ</a>
+            <section>導入事例 よくある質問 PDF ダウンロード</section>
+          </body>
+        </html>
+    """,
+    "https://example.com/service": """
+        <html>
+          <head><title>業務改善サービス 資料</title></head>
+          <body>
+            <h1>LP</h1>
+            <a href="/contact">無料相談</a>
+            <p>業務改善のためのサービス紹介です。</p>
+          </body>
+        </html>
+    """,
+    "https://example.com/faq": """
+        <html>
+          <head><title>よくある質問</title></head>
+          <body>
+            <h1>よくある質問</h1>
+            <h2>質問一覧</h2>
+            <p>FAQ のみで CTA はありません。</p>
+          </body>
+        </html>
+    """,
+}
+
+
+class DummyResponse:
+    def __init__(self, text: str, status_code: int = 200):
+        self.text = text
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
 
 
 class AnalysisFlowTests(unittest.TestCase):
@@ -89,6 +139,47 @@ class AnalysisFlowTests(unittest.TestCase):
 
         direct_summary = build_rule_based_summary(snapshot, recommendations, [], None)
         self.assertIn("最新日: 2026-03-22", direct_summary)
+
+    def test_parse_target_urls_normalizes_and_deduplicates(self):
+        text = """
+        # comment
+        https://Example.com/
+        https://example.com
+        https://example.com/service/?utm_source=test
+        invalid-url
+        """
+
+        urls = parse_target_urls(text)
+
+        self.assertEqual(
+            urls,
+            [
+                "https://example.com/",
+                "https://example.com/service",
+            ],
+        )
+
+    @patch("src.url_analyzer.requests.get")
+    def test_analyze_site_crawls_internal_pages(self, mock_get):
+        def fake_get(url, headers=None, timeout=None):
+            normalized_url = url.rstrip("/") + "/" if url.rstrip("/") == "https://example.com" else url.rstrip("/")
+            if normalized_url == "https://example.com":
+                normalized_url = "https://example.com/"
+            html = SITE_HTML.get(normalized_url)
+            if html is None:
+                raise RuntimeError(f"unexpected url: {url}")
+            return DummyResponse(html)
+
+        mock_get.side_effect = fake_get
+
+        result = analyze_site("https://example.com/", max_pages=3)
+
+        self.assertEqual(result["url"], "https://example.com/")
+        self.assertEqual(result["page_count"], 3)
+        self.assertEqual(len(result["pages"]), 3)
+        self.assertTrue(any("同一ドメイン内 3 ページを分析" in item for item in result["site_findings"]))
+        self.assertTrue(any("CTA未設置ページ" in item for item in result["site_improvements"]))
+        self.assertEqual(result["weak_pages"][0]["url"], "https://example.com/faq")
 
 
 if __name__ == "__main__":

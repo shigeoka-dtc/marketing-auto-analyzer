@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 venv/
 env/
+.env
 
 db/*.duckdb
 db/*.sqlite
@@ -16,6 +17,7 @@ logs/*
 data/*.parquet
 .streamlit/
 .DS_Store
+state/
 
 !db/.gitkeep
 !reports/.gitkeep

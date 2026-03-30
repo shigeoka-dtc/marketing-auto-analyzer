@@ -5,6 +5,7 @@ __pycache__
 .venv
 venv
 env
+.env
 .git
 
 data/*.parquet
@@ -14,3 +15,4 @@ db/*.db
 db/*.lock
 reports/*
 logs/*
+state/*

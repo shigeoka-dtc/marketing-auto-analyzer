@@ -9,11 +9,16 @@ services:
       - ./reports:/app/reports
     environment:
       STATE_DB: /app/db/state.runtime.sqlite
-      OLLAMA_URL: http://host.docker.internal:11434
-      OLLAMA_MODEL: phi3:mini
-      OLLAMA_ENABLED: "true"
-      OLLAMA_TIMEOUT: 45
-      OLLAMA_NUM_PREDICT: 300
+      TARGET_URLS_FILE: /app/data/raw/target_urls.txt
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-phi3:mini}
+      OLLAMA_ENABLED: ${OLLAMA_ENABLED:-false}
+      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-45}
+      OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-300}
+      WORKER_INTERVAL_SECONDS: ${WORKER_INTERVAL_SECONDS:-600}
+      TARGET_SITE_MAX_PAGES: ${TARGET_SITE_MAX_PAGES:-5}
+      URL_BATCH_SIZE: ${URL_BATCH_SIZE:-3}
+      URL_ANALYSIS_TIMEOUT: ${URL_ANALYSIS_TIMEOUT:-20}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: python -m src.worker
@@ -28,13 +33,15 @@ services:
       - ./reports:/app/reports
     environment:
       STATE_DB: /app/db/state.runtime.sqlite
-      OLLAMA_URL: http://host.docker.internal:11434
-      OLLAMA_MODEL: phi3:mini
-      OLLAMA_ENABLED: "true"
-      OLLAMA_TIMEOUT: 45
-      OLLAMA_NUM_PREDICT: 300
+      TARGET_URLS_FILE: /app/data/raw/target_urls.txt
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-phi3:mini}
+      OLLAMA_ENABLED: ${OLLAMA_ENABLED:-false}
+      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-45}
+      OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-300}
+      TARGET_SITE_MAX_PAGES: ${TARGET_SITE_MAX_PAGES:-5}
+      URL_ANALYSIS_TIMEOUT: ${URL_ANALYSIS_TIMEOUT:-20}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "8501:8501"
-    command: streamlit run app.py --server.address 0.0.0.0 --server.port 8501
