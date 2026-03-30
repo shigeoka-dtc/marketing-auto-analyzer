@@ -6,6 +6,8 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 import requests
 from bs4 import BeautifulSoup
 
+from src.url_security import assert_safe_target_url
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -14,6 +16,7 @@ HEADERS = {
 }
 URL_ANALYSIS_TIMEOUT = int(os.getenv("URL_ANALYSIS_TIMEOUT", "20"))
 MAX_INTERNAL_LINKS_PER_PAGE = int(os.getenv("MAX_INTERNAL_LINKS_PER_PAGE", "20"))
+URL_ANALYSIS_MAX_REDIRECTS = int(os.getenv("URL_ANALYSIS_MAX_REDIRECTS", "5"))
 
 EXCLUDED_LINK_PREFIXES = ("mailto:", "tel:", "javascript:", "#")
 EXCLUDED_EXTENSIONS = (
@@ -50,6 +53,7 @@ def _unique_keep_order(values: list[str]) -> list[str]:
 
 
 def _normalize_cta(text: str) -> str:
+    text = (text or "").replace("\u3000", " ")
     text = _clean(text)
     text = text.replace("  ", " ")
     text = text.replace("を 申込む", "を申込む")
@@ -254,10 +258,41 @@ def _analyze_html(url: str, html: str, include_internal_links: bool = False) -> 
     return result
 
 
+def _fetch_html(url: str) -> tuple[str, str]:
+    current_url = url
+    for _ in range(URL_ANALYSIS_MAX_REDIRECTS + 1):
+        assert_safe_target_url(current_url)
+        response = requests.get(
+            current_url,
+            headers=HEADERS,
+            timeout=URL_ANALYSIS_TIMEOUT,
+            allow_redirects=False,
+        )
+        headers = getattr(response, "headers", {}) or {}
+        status_code = getattr(response, "status_code", 200)
+
+        if 300 <= status_code < 400:
+            location = headers.get("Location") or headers.get("location")
+            if not location:
+                raise RuntimeError("リダイレクト先がありません")
+            redirected_url = _normalize_url(urljoin(current_url, location))
+            if not redirected_url:
+                raise RuntimeError("リダイレクト先URLが不正です")
+            current_url = redirected_url
+            continue
+
+        response.raise_for_status()
+        content_type = (headers.get("Content-Type") or headers.get("content-type") or "").lower()
+        if content_type and not any(token in content_type for token in ["text/html", "application/xhtml+xml", "text/plain"]):
+            raise ValueError(f"HTMLではないレスポンスです: {content_type}")
+        return current_url, response.text
+
+    raise RuntimeError(f"リダイレクトが多すぎます: {URL_ANALYSIS_MAX_REDIRECTS} 回超")
+
+
 def analyze_url(url: str, include_internal_links: bool = False) -> dict:
-    response = requests.get(url, headers=HEADERS, timeout=URL_ANALYSIS_TIMEOUT)
-    response.raise_for_status()
-    return _analyze_html(url, response.text, include_internal_links=include_internal_links)
+    final_url, html = _fetch_html(url)
+    return _analyze_html(final_url, html, include_internal_links=include_internal_links)
 
 
 def _build_site_summary(start_url: str, pages: list[dict], errors: list[dict]) -> dict:
@@ -335,6 +370,7 @@ def analyze_site(start_url: str, max_pages: int = 5) -> dict:
     normalized_start = _normalize_url(start_url)
     if not normalized_start:
         raise ValueError("分析対象URLは http:// または https:// で始めてください")
+    assert_safe_target_url(normalized_start)
 
     pending = deque([normalized_start])
     visited = set()
@@ -355,6 +391,8 @@ def analyze_site(start_url: str, max_pages: int = 5) -> dict:
             errors.append({"url": current_url, "error": str(exc)})
             continue
 
+        final_url = page_result.get("url", current_url)
+        visited.add(final_url)
         internal_links = page_result.pop("internal_links", [])
         pages.append(page_result)
 

@@ -105,6 +105,16 @@ class AnalysisFlowTests(unittest.TestCase):
         self.assertEqual(first["status"], "loaded")
         self.assertEqual(second["status"], "skipped")
 
+    def test_etl_rejects_missing_required_columns(self):
+        self.csv_path.write_text(
+            "date,channel,campaign,sessions,users,conversions,revenue\n"
+            "2026-03-20,google,campaign_a,1200,900,42,180000\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "必須列が不足しています"):
+            etl.load_csv_to_duckdb(force=True)
+
     def test_snapshot_and_recommendations(self):
         etl.load_csv_to_duckdb(force=True)
         df = analysis.read_mart()
@@ -297,6 +307,26 @@ class AnalysisFlowTests(unittest.TestCase):
         retry_claim = state.claim_next_urls(limit=1)
         self.assertEqual(retry_claim, ["https://example.com/"])
 
+    def test_sync_url_queue_reset_existing_requeues_done_url(self):
+        state.sync_url_queue(["https://example.com/"], base_priority=10)
+        state.mark_url_done("https://example.com/")
+
+        state.sync_url_queue(["https://example.com/"], base_priority=10, reset_existing=True)
+
+        row = state.list_url_queue(limit=1)[0]
+        self.assertEqual(row["status"], "pending")
+        self.assertIsNone(row["last_analyzed_at"])
+        self.assertEqual(row["retry_count"], 0)
+
+    def test_state_db_fails_fast_when_unwritable(self):
+        with patch("src.state.os.access", return_value=False):
+            with self.assertRaises(RuntimeError):
+                state.get_conn()
+
+    def test_private_url_is_rejected(self):
+        with self.assertRaises(ValueError):
+            analyze_site("http://127.0.0.1/", max_pages=1)
+
     def test_merge_site_results_uses_stored_and_pending_entries(self):
         stored_result = state.upsert_site_analysis_result(
             {
@@ -323,9 +353,10 @@ class AnalysisFlowTests(unittest.TestCase):
         self.assertEqual(merged[1]["url"], "https://example.com/faq")
         self.assertEqual(merged[1]["analysis_status"], "pending")
 
+    @patch("src.url_analyzer.assert_safe_target_url")
     @patch("src.url_analyzer.requests.get")
-    def test_analyze_site_crawls_internal_pages(self, mock_get):
-        def fake_get(url, headers=None, timeout=None):
+    def test_analyze_site_crawls_internal_pages(self, mock_get, mock_safe_url):
+        def fake_get(url, headers=None, timeout=None, allow_redirects=None):
             normalized_url = url.rstrip("/") + "/" if url.rstrip("/") == "https://example.com" else url.rstrip("/")
             if normalized_url == "https://example.com":
                 normalized_url = "https://example.com/"
@@ -335,6 +366,7 @@ class AnalysisFlowTests(unittest.TestCase):
             return DummyResponse(html)
 
         mock_get.side_effect = fake_get
+        mock_safe_url.return_value = None
 
         result = analyze_site("https://example.com/", max_pages=3)
 

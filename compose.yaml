@@ -24,6 +24,7 @@ services:
       TARGET_SITE_MAX_PAGES: ${TARGET_SITE_MAX_PAGES:-5}
       URL_BATCH_SIZE: ${URL_BATCH_SIZE:-3}
       URL_ANALYSIS_TIMEOUT: ${URL_ANALYSIS_TIMEOUT:-20}
+      ALLOWED_TARGET_HOSTS: ${ALLOWED_TARGET_HOSTS:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: /bin/bash /app/run_worker.sh
@@ -49,8 +50,9 @@ services:
       SQLITE_BUSY_TIMEOUT_MS: ${SQLITE_BUSY_TIMEOUT_MS:-30000}
       TARGET_SITE_MAX_PAGES: ${TARGET_SITE_MAX_PAGES:-5}
       URL_ANALYSIS_TIMEOUT: ${URL_ANALYSIS_TIMEOUT:-20}
+      ALLOWED_TARGET_HOSTS: ${ALLOWED_TARGET_HOSTS:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
     command: /bin/bash /app/run_dashboard.sh
