@@ -1,6 +1,6 @@
 from pathlib import Path
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 STATE_DB = "db/state.sqlite"
 
@@ -88,5 +88,32 @@ def mark_url_done(url: str):
             last_analyzed_at = ?
         WHERE url = ?
     """, (datetime.utcnow().isoformat(), url))
+    conn.commit()
+    conn.close()
+
+def requeue_stale_done_urls(hours: int = 24):
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT url, last_analyzed_at
+        FROM url_queue
+        WHERE status = 'done'
+    """).fetchall()
+
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    for r in rows:
+        ts = r["last_analyzed_at"]
+        if not ts:
+            continue
+        try:
+            dt = datetime.fromisoformat(ts)
+        except Exception:
+            continue
+        if now - dt >= timedelta(hours=hours):
+            conn.execute("""
+                UPDATE url_queue
+                SET status = 'pending'
+                WHERE url = ?
+            """, (r["url"],))
     conn.commit()
     conn.close()

@@ -10,6 +10,7 @@ services:
     environment:
       OLLAMA_URL: http://host.docker.internal:11434
       OLLAMA_MODEL: phi3:mini
+      OLLAMA_TIMEOUT: 300
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: python -m src.worker
@@ -25,6 +26,7 @@ services:
     environment:
       OLLAMA_URL: http://host.docker.internal:11434
       OLLAMA_MODEL: phi3:mini
+      OLLAMA_TIMEOUT: 300
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
