@@ -1,47 +1,38 @@
+import logging
 import os
 import re
 from collections import Counter, deque
+from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
 from bs4 import BeautifulSoup
 
 from src.url_security import assert_safe_target_url
+from src.playwright_crawler import crawl_page as _crawl_with_playwright
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/123 Safari/537.36"
-    )
-}
+# Configuration from environment
+USE_PLAYWRIGHT = os.getenv("USE_PLAYWRIGHT", "false").lower() in ("1", "true", "yes")
+PLAYWRIGHT_HEADLESS = os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() in ("1", "true", "yes")
 URL_ANALYSIS_TIMEOUT = int(os.getenv("URL_ANALYSIS_TIMEOUT", "20"))
-MAX_INTERNAL_LINKS_PER_PAGE = int(os.getenv("MAX_INTERNAL_LINKS_PER_PAGE", "20"))
-URL_ANALYSIS_MAX_REDIRECTS = int(os.getenv("URL_ANALYSIS_MAX_REDIRECTS", "5"))
+URL_ANALYSIS_MAX_REDIRECTS = 5
+MAX_INTERNAL_LINKS_PER_PAGE = 20
+EXCLUDED_LINK_PREFIXES = ("#", "javascript:", "mailto:", "tel:")
+EXCLUDED_EXTENSIONS = (".pdf", ".zip", ".exe", ".dmg", ".docx", ".xlsx")
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+}
 
-EXCLUDED_LINK_PREFIXES = ("mailto:", "tel:", "javascript:", "#")
-EXCLUDED_EXTENSIONS = (
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".gif",
-    ".svg",
-    ".webp",
-    ".pdf",
-    ".zip",
-    ".doc",
-    ".docx",
-    ".xls",
-    ".xlsx",
-    ".ppt",
-    ".pptx",
-)
+logger = logging.getLogger(__name__)
 
 
 def _clean(text: str) -> str:
+    """Clean and normalize whitespace in text."""
     return re.sub(r"\s+", " ", text).strip()
 
 
 def _unique_keep_order(values: list[str]) -> list[str]:
+    """Remove duplicates while preserving order."""
     seen = set()
     unique_values = []
     for value in values:
@@ -53,6 +44,7 @@ def _unique_keep_order(values: list[str]) -> list[str]:
 
 
 def _normalize_cta(text: str) -> str:
+    """Normalize CTA text for consistency."""
     text = (text or "").replace("\u3000", " ")
     text = _clean(text)
     text = text.replace("  ", " ")
@@ -62,6 +54,7 @@ def _normalize_cta(text: str) -> str:
 
 
 def _normalize_url(url: str) -> str:
+    """Normalize URL to canonical form."""
     value = (url or "").strip()
     if not value:
         return ""
@@ -85,7 +78,50 @@ def _normalize_url(url: str) -> str:
     )
 
 
+def analyze_url(url: str, include_internal_links: bool = False) -> dict:
+    """
+    Analyze a URL using Playwright if available, otherwise use requests.
+    Returns page analysis with screenshot_path and body_excerpt if available.
+    """
+    final_url = url
+    html = None
+    screenshot_path = None
+
+    if USE_PLAYWRIGHT:
+        try:
+            pd = _crawl_with_playwright(url, headless=PLAYWRIGHT_HEADLESS)
+            html_path = pd.get("html_path")
+            screenshot_path = pd.get("screenshot_path")
+            if html_path and Path(html_path).exists():
+                with open(html_path, "r", encoding="utf-8") as fh:
+                    html = fh.read()
+                final_url = url
+            else:
+                final_url, html = _fetch_html(url)
+        except Exception as e:
+            logger.debug("Playwright failed for %s: %s, falling back to requests", url, e)
+            final_url, html = _fetch_html(url)
+    else:
+        final_url, html = _fetch_html(url)
+
+    page_result = _analyze_html(final_url, html, include_internal_links=include_internal_links)
+    
+    # Add body excerpt for LLM/evidence
+    if html:
+        excerpt = re.sub(
+            r"\s+", " ", 
+            BeautifulSoup(html, "lxml").get_text(" ", strip=True)
+        )[:300]
+        page_result["body_excerpt"] = excerpt
+    
+    if screenshot_path:
+        page_result["screenshot_path"] = screenshot_path
+
+    return page_result
+
+
 def _is_cta(text: str, href: str) -> bool:
+    """Determine if a link is a call-to-action."""
     href_l = (href or "").lower()
 
     if text in {"詳しくはこちら", "詳細はこちら", "請負", "常駐", "派遣"}:
@@ -118,6 +154,7 @@ def _is_cta(text: str, href: str) -> bool:
 
 
 def _extract_internal_links(base_url: str, soup: BeautifulSoup) -> list[str]:
+    """Extract internal links from page."""
     base = urlsplit(base_url)
     links = []
 
@@ -143,7 +180,26 @@ def _extract_internal_links(base_url: str, soup: BeautifulSoup) -> list[str]:
 
 
 def _analyze_html(url: str, html: str, include_internal_links: bool = False) -> dict:
-    soup = BeautifulSoup(html, "lxml")
+    """Analyze HTML and extract SEO/UX findings."""
+    try:
+        soup = BeautifulSoup(html, "lxml")
+    except Exception as e:
+        logger.error("Failed to parse HTML for %s: %s", url, e)
+        return {
+            "url": url,
+            "title": "",
+            "h1": [],
+            "h2_count": 0,
+            "cta_count": 0,
+            "unique_ctas": [],
+            "has_faq": False,
+            "has_case": False,
+            "has_pdf": False,
+            "text_length": 0,
+            "score": 0,
+            "findings": ["HTML解析エラー"],
+            "improvements": ["HTMLの形式を確認してください"],
+        }
 
     title = _clean(soup.title.get_text()) if soup.title else ""
     h1_list = [_clean(node.get_text(" ", strip=True)) for node in soup.find_all("h1")]
@@ -193,10 +249,6 @@ def _analyze_html(url: str, html: str, include_internal_links: bool = False) -> 
         score -= 10
         findings.append("h1が抽象的")
         improvements.append("H1を検索意図に沿った具体的な表現へ変更する")
-
-    if h1_list and title and "マニュアル作成サービス" in title and "マニュアルLP" in h1_list:
-        score -= 5
-        improvements.append("titleとH1の意味を揃える")
 
     if len(h2_list) < 2:
         score -= 5
@@ -259,40 +311,47 @@ def _analyze_html(url: str, html: str, include_internal_links: bool = False) -> 
 
 
 def _fetch_html(url: str) -> tuple[str, str]:
+    """Fetch HTML from URL, handling redirects."""
     current_url = url
-    for _ in range(URL_ANALYSIS_MAX_REDIRECTS + 1):
+    for attempt in range(URL_ANALYSIS_MAX_REDIRECTS + 1):
         assert_safe_target_url(current_url)
-        response = requests.get(
-            current_url,
-            headers=HEADERS,
-            timeout=URL_ANALYSIS_TIMEOUT,
-            allow_redirects=False,
-        )
-        headers = getattr(response, "headers", {}) or {}
-        status_code = getattr(response, "status_code", 200)
+        try:
+            response = requests.get(
+                current_url,
+                headers=HEADERS,
+                timeout=URL_ANALYSIS_TIMEOUT,
+                allow_redirects=False,
+            )
+            headers = getattr(response, "headers", {}) or {}
+            status_code = getattr(response, "status_code", 200)
 
-        if 300 <= status_code < 400:
-            location = headers.get("Location") or headers.get("location")
-            if not location:
-                raise RuntimeError("リダイレクト先がありません")
-            redirected_url = _normalize_url(urljoin(current_url, location))
-            if not redirected_url:
-                raise RuntimeError("リダイレクト先URLが不正です")
-            current_url = redirected_url
-            continue
+            if 300 <= status_code < 400:
+                location = headers.get("Location") or headers.get("location")
+                if not location:
+                    raise RuntimeError("リダイレクト先がありません")
+                redirected_url = _normalize_url(urljoin(current_url, location))
+                if not redirected_url:
+                    raise RuntimeError("リダイレクト先URLが不正です")
+                current_url = redirected_url
+                continue
 
-        response.raise_for_status()
-        content_type = (headers.get("Content-Type") or headers.get("content-type") or "").lower()
-        if content_type and not any(token in content_type for token in ["text/html", "application/xhtml+xml", "text/plain"]):
-            raise ValueError(f"HTMLではないレスポンスです: {content_type}")
-        return current_url, response.text
+            response.raise_for_status()
+            content_type = (
+                headers.get("Content-Type") or headers.get("content-type") or ""
+            ).lower()
+            if content_type and not any(
+                token in content_type 
+                for token in ["text/html", "application/xhtml+xml", "text/plain"]
+            ):
+                raise ValueError(f"HTMLではないレスポンスです: {content_type}")
+            return current_url, response.text
+        except requests.RequestException as e:
+            logger.error("Request failed for %s: %s", current_url, e)
+            raise
 
-    raise RuntimeError(f"リダイレクトが多すぎます: {URL_ANALYSIS_MAX_REDIRECTS} 回超")
-
-
-def analyze_url(url: str, include_internal_links: bool = False) -> dict:
-    final_url, html = _fetch_html(url)
-    return _analyze_html(final_url, html, include_internal_links=include_internal_links)
+    raise RuntimeError(
+        f"リダイレクトが多すぎます: {URL_ANALYSIS_MAX_REDIRECTS} 回超"
+    )
 
 
 def _build_site_summary(start_url: str, pages: list[dict], errors: list[dict]) -> dict:

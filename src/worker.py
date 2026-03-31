@@ -9,6 +9,9 @@ from src.analysis import build_analysis_snapshot, read_mart
 from src.deep_analysis import generate_deep_analysis
 from src.etl import load_csv_to_duckdb
 from src.recommend import generate_recommendations
+from src.recommend_enhanced import enhance_recommendations_with_quantified_impact
+from src.forecasting import add_forecasts_to_analysis
+from src.impact_analysis import analyze_initiative_impact
 from src.report import render_marketing_report, save_report
 from src.site_results_service import (
     build_site_error_result,
@@ -29,22 +32,28 @@ from src.state import (
 from src.summary_service import generate_summary
 from src.url_analyzer import analyze_site
 from src.url_targets import load_target_urls, target_urls_file_exists
+from src import lighthouse_analyzer
+from src import llm_helper
 
-SLEEP_SECONDS = int(os.getenv("WORKER_INTERVAL_SECONDS", "600"))
+# Configuration constants from environment
+USE_LIGHTHOUSE = os.getenv("USE_LIGHTHOUSE", "true").lower() in ("1", "true", "yes")
+ENABLE_FORECASTING = os.getenv("FORECASTING_ENABLED", "true").lower() in ("1", "true", "yes")
+ENABLE_IMPACT_ANALYSIS = os.getenv("IMPACT_ANALYSIS_ENABLED", "true").lower() in ("1", "true", "yes")
+PROMPT_NAME = "deep_analysis.md"
 TARGET_SITE_MAX_PAGES = int(os.getenv("TARGET_SITE_MAX_PAGES", "5"))
 URL_BATCH_SIZE = int(os.getenv("URL_BATCH_SIZE", "3"))
-SEED_URLS = [
-    "https://service.daitecjp.com/index.php/manual-production/",
-]
+SLEEP_SECONDS = int(os.getenv("WORKER_INTERVAL_SECONDS", "600"))
+SEED_URLS = []  # Will be loaded from target URLs file
 
 logger = logging.getLogger(__name__)
-
 
 def setup_logging():
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
+    global logger
+    logger = logging.getLogger(__name__)
 
 
 def load_seed_urls() -> list[str]:
@@ -84,6 +93,42 @@ def run_cycle(
         snapshot["diagnostics"],
         snapshot["alerts"],
     )
+    
+    # Add forecasting if enabled
+    if ENABLE_FORECASTING:
+        try:
+            snapshot = add_forecasts_to_analysis(snapshot, df)
+            logger.info("Forecasting analysis added to snapshot")
+        except Exception as e:
+            logger.warning("Forecasting failed: %s", e)
+    
+    # Add impact analysis if enabled
+    impact_analysis_result = None
+    if ENABLE_IMPACT_ANALYSIS:
+        try:
+            # For worker, we analyze all channels as potential initiatives
+            initiatives = [
+                {"name": f"{channel} channel", "date": datetime.now(UTC).isoformat(), "metric": "roas"}
+                for channel in snapshot.get("channels", {}).keys()
+            ]
+            if initiatives:
+                impact_analysis_result = analyze_initiative_impact(df, initiatives)
+                logger.info("Impact analysis completed for %d initiatives", len(initiatives))
+        except Exception as e:
+            logger.warning("Impact analysis failed: %s", e)
+    
+    # Enhance recommendations with quantified impact
+    if ENABLE_FORECASTING or ENABLE_IMPACT_ANALYSIS:
+        try:
+            recommendations = enhance_recommendations_with_quantified_impact(
+                recommendations,
+                df,
+                channels_df=snapshot.get("channels"),
+                impact_analysis=impact_analysis_result,
+            )
+            logger.info("Enhanced recommendations with quantified impact")
+        except Exception as e:
+            logger.warning("Recommendation enhancement failed: %s", e)
 
     url_results = []
     for url in claim_next_urls(limit=URL_BATCH_SIZE):
@@ -100,6 +145,57 @@ def run_cycle(
                 url,
                 result.get("page_count", 0),
             )
+
+            # Lighthouse and LLM analysis
+            try:
+                lh_summary = None
+                if USE_LIGHTHOUSE:
+                    try:
+                        from urllib.parse import urlsplit
+                        safe_domain = urlsplit(url).netloc.replace(":", "_")
+                        lh_json = lighthouse_analyzer.run_lighthouse(
+                            url, output_dir=f"reports/lighthouse/{safe_domain}"
+                        )
+                        lh_summary = lighthouse_analyzer.summarize_lighthouse(lh_json)
+                    except Exception as e:
+                        logger.exception("Lighthouse failed for %s: %s", url, e)
+                        lh_summary = {"error": str(e)}
+
+                # Build evidence
+                evidence = []
+                if isinstance(lh_summary, dict) and lh_summary.get("vitals"):
+                    evidence.append(f"Lighthouse vitals: {lh_summary.get('vitals')}")
+                # Add up to 3 page snippets from site result
+                for p in result.get("pages", [])[:3]:
+                    title = p.get("title") or ""
+                    snippet = p.get("body_excerpt") or title
+                    evidence.append(
+                        f"Page: {p.get('url')} title: {title} snippet: {snippet} "
+                        f"score:{p.get('score')}"
+                    )
+                    if p.get("screenshot_path"):
+                        evidence.append(f"Screenshot: {p.get('screenshot_path')}")
+
+                # Only call LLM if we have at least one evidence line
+                if evidence and not skip_llm:
+                    try:
+                        llm_res = llm_helper.generate_analysis(
+                            PROMPT_NAME,
+                            evidence,
+                            model=os.getenv("OLLAMA_MODEL", "phi3:mini"),
+                        )
+                        # attach LLM result to site record
+                        upsert_site_analysis_result(
+                            {**result, "llm_analysis": llm_res},
+                            analysis_status="success",
+                        )
+                    except Exception as e:
+                        logger.exception("LLM generation failed for %s: %s", url, e)
+                else:
+                    logger.info("Skipping LLM generation for %s", url)
+            except Exception:
+                logger.exception("Post-analysis processing failed for %s", url)
+
         except Exception as exc:
             mark_url_retry(url, error_message=str(exc))
             url_results.append(

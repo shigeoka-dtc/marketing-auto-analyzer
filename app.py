@@ -1,5 +1,8 @@
 import os
 
+# Set Streamlit config directory before importing streamlit
+os.environ['STREAMLIT_CONFIG_DIR'] = '/app/.streamlit'
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
