@@ -227,3 +227,35 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+# 既存の成功パス直後（upsert_site_analysis_result / mark_url_done の直後）
+try:
+    # Lighthouse
+    lh_summary = None
+    if USE_LIGHTHOUSE:
+        try:
+            lh_json = lighthouse_analyzer.run_lighthouse(url, output_dir=f"reports/lighthouse/{safe_domain}")
+            lh_summary = lighthouse_analyzer.summarize_lighthouse(lh_json)
+        except Exception as e:
+            logger.exception("Lighthouse failed for %s: %s", url, e)
+            lh_summary = {"error": str(e)}
+
+    # build evidence (always ensure at least one evidence item if possible)
+    evidence = []
+    if lh_summary and "vitals" in lh_summary:
+        evidence.append(f"Lighthouse vitals: {lh_summary.get('vitals')}")
+    # take top 3 pages
+    for p in result.get("pages", [])[:3]:
+        snippet = p.get("body_excerpt") or (p.get("title") or "")  # add body_excerpt field in url_analyzer if needed
+        evidence.append(f"Page: {p.get('url')} title: {p.get('title')} snippet: {snippet} score:{p.get('score')}")
+        if p.get("screenshot_path"):
+            evidence.append(f"Screenshot: {p.get('screenshot_path')}")
+    # call LLM (llm_helper will skip if OLLAMA_ENABLED=false)
+    try:
+        llm_res = llm_helper.generate_analysis(PROMPT_NAME, evidence, model=os.getenv("OLLAMA_MODEL","phi3:mini"))
+        # attach llm_res to result or save report
+        upsert_site_analysis_result({**result, "llm_analysis": llm_res}, analysis_status="success")
+    except Exception as e:
+        logger.exception("LLM generation failed: %s", e)

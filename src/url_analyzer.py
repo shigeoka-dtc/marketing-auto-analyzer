@@ -428,3 +428,15 @@ def analyze_site(start_url: str, max_pages: int = 5) -> dict:
         raise RuntimeError(f"サイト分析に失敗しました: {first_error}")
 
     return _build_site_summary(normalized_start, pages, errors)
+
+
+# after reading html from playwright
+pd = _crawl_with_playwright(...)
+html_path = pd.get("html_path")
+screenshot_path = pd.get("screenshot_path")
+...
+# 最終的に _analyze_html を呼んだ後に戻り値へ screenshot_path を追加
+page_result = _analyze_html(final_url, html, include_internal_links=include_internal_links)
+if screenshot_path:
+    page_result["screenshot_path"] = screenshot_path
+return page_result
