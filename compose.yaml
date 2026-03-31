@@ -37,7 +37,9 @@ services:
       - ./data:/app/data
       - ./db:/app/db
       - ./reports:/app/reports
+      - ./.streamlit:/app/.streamlit
     environment:
+      STREAMLIT_CONFIG_DIR: /app/.streamlit
       STATE_DB: /app/db/state.runtime.sqlite
       TARGET_URLS_FILE: /app/data/raw/target_urls.txt
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}

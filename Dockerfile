@@ -27,7 +27,13 @@ COPY . .
 
 RUN chmod +x /app/run.sh /app/run_dashboard.sh /app/run_worker.sh
 
+# Create user with UID 1000 for non-root execution and set home directory
+RUN useradd -m -u 1000 -d /app appuser && \
+    chown -R appuser:appuser /app
+
 # Install Playwright browsers (without system dependencies - already installed)
 RUN python -m playwright install
+
+USER appuser
 
 CMD ["/bin/bash", "/app/run_dashboard.sh"]
