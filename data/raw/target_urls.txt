@@ -1,2 +1,5 @@
 https://service.daitecjp.com/index.php/manual-production
 https://service.daitecjp.com/
+https://daitecjp.com/
+https://dx.daitecjp.com/
+

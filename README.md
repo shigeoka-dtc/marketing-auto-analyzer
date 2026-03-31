@@ -128,3 +128,11 @@ date,channel,campaign,sessions,users,conversions,revenue,cost
 - [src/worker.py](/home/nshigeoka/marketing-auto-analyzer/src/worker.py)
 - [src/url_analyzer.py](/home/nshigeoka/marketing-auto-analyzer/src/url_analyzer.py)
 - [src/url_targets.py](/home/nshigeoka/marketing-auto-analyzer/src/url_targets.py)
+
+## JS 対応クロールの実行準備 (Playwright + Lighthouse)
+
+ローカルで動かす手順（1回だけ実行）:
+1. Node.js が必要です（Lighthouse 用）。macOS/Homebrew や公式 Node インストーラを使用してください。
+2. Python 依存をインストール:
+   ```bash
+   pip install -r requirements.txt

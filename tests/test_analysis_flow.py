@@ -3,6 +3,33 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import os
+import pytest
+from pathlib import Path
+from src.playwright_crawler import crawl_page
+
+@pytest.mark.skipif(os.getenv("CI")=="true", reason="Playwright in CI may not be installed in minimal runners")
+def test_crawl_example():
+/*************  ✨ Windsurf Command ⭐  *************/
+    """
+    Test if crawl_page can crawl a page and save the HTML to a file.
+
+    When headless is True, the function should return a dictionary containing the
+    crawled HTML path and screenshot path. The HTML path should be a real file
+    path.
+
+    The test is skipped if the CI environment variable is set to "true".
+    This is because Playwright may not be installed in the CI environment.
+    """
+/*******  6c15dd35-9fb7-4a54-83a0-0a2e77053e6b  *******/
+    url = "https://example.com/"
+    res = crawl_page(url, headless=True)
+    assert "html_path" in res
+    assert Path(res["html_path"]).exists()
+    # screenshot は存在する可能性があるが環境依存なので存在チェックは任意
+
+
+
 from src import analysis, db_utils, etl, state
 from src.deep_analysis import generate_deep_analysis
 from src.recommend import generate_recommendations
