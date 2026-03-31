@@ -9,6 +9,9 @@ from src.analysis import build_analysis_snapshot, read_mart
 from src.deep_analysis import generate_deep_analysis
 from src.etl import load_csv_to_duckdb
 from src.recommend import generate_recommendations
+from src.recommend_enhanced import enhance_recommendations_with_quantified_impact
+from src.forecasting import add_forecasts_to_analysis
+from src.impact_analysis import analyze_initiative_impact
 from src.report import render_marketing_report, save_report
 from src.site_results_service import (
     build_site_error_result,
@@ -34,6 +37,8 @@ from src import llm_helper
 
 # Configuration constants from environment
 USE_LIGHTHOUSE = os.getenv("USE_LIGHTHOUSE", "true").lower() in ("1", "true", "yes")
+ENABLE_FORECASTING = os.getenv("FORECASTING_ENABLED", "true").lower() in ("1", "true", "yes")
+ENABLE_IMPACT_ANALYSIS = os.getenv("IMPACT_ANALYSIS_ENABLED", "true").lower() in ("1", "true", "yes")
 PROMPT_NAME = "deep_analysis.md"
 TARGET_SITE_MAX_PAGES = int(os.getenv("TARGET_SITE_MAX_PAGES", "5"))
 URL_BATCH_SIZE = int(os.getenv("URL_BATCH_SIZE", "3"))
@@ -88,6 +93,42 @@ def run_cycle(
         snapshot["diagnostics"],
         snapshot["alerts"],
     )
+    
+    # Add forecasting if enabled
+    if ENABLE_FORECASTING:
+        try:
+            snapshot = add_forecasts_to_analysis(snapshot, df)
+            logger.info("Forecasting analysis added to snapshot")
+        except Exception as e:
+            logger.warning("Forecasting failed: %s", e)
+    
+    # Add impact analysis if enabled
+    impact_analysis_result = None
+    if ENABLE_IMPACT_ANALYSIS:
+        try:
+            # For worker, we analyze all channels as potential initiatives
+            initiatives = [
+                {"name": f"{channel} channel", "date": datetime.now(UTC).isoformat(), "metric": "roas"}
+                for channel in snapshot.get("channels", {}).keys()
+            ]
+            if initiatives:
+                impact_analysis_result = analyze_initiative_impact(df, initiatives)
+                logger.info("Impact analysis completed for %d initiatives", len(initiatives))
+        except Exception as e:
+            logger.warning("Impact analysis failed: %s", e)
+    
+    # Enhance recommendations with quantified impact
+    if ENABLE_FORECASTING or ENABLE_IMPACT_ANALYSIS:
+        try:
+            recommendations = enhance_recommendations_with_quantified_impact(
+                recommendations,
+                df,
+                channels_df=snapshot.get("channels"),
+                impact_analysis=impact_analysis_result,
+            )
+            logger.info("Enhanced recommendations with quantified impact")
+        except Exception as e:
+            logger.warning("Recommendation enhancement failed: %s", e)
 
     url_results = []
     for url in claim_next_urls(limit=URL_BATCH_SIZE):
