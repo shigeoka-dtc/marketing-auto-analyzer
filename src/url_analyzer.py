@@ -354,11 +354,6 @@ def _fetch_html(url: str) -> tuple[str, str]:
     )
 
 
-def analyze_url(url: str, include_internal_links: bool = False) -> dict:
-    final_url, html = _fetch_html(url)
-    return _analyze_html(final_url, html, include_internal_links=include_internal_links)
-
-
 def _build_site_summary(start_url: str, pages: list[dict], errors: list[dict]) -> dict:
     page_scores = [page["score"] for page in pages]
     weak_pages = sorted(pages, key=lambda page: (page.get("score", 0), page.get("url", "")))[:3]
