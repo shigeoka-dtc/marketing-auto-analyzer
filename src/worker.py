@@ -30,6 +30,38 @@ from src.summary_service import generate_summary
 from src.url_analyzer import analyze_site
 from src.url_targets import load_target_urls, target_urls_file_exists
 
+from src import lighthouse_analyzer
+from src import llm_helper
+import os
+
+USE_LIGHTHOUSE = os.getenv("USE_LIGHTHOUSE", "true").lower() in ("1","true","yes")
+PROMPT_NAME = "deep_analysis.md"
+
+# ... inside the for url loop, after result obtained ...
+site_summary = result  # result is upserted site summary
+if USE_LIGHTHOUSE:
+    try:
+        lh_json = lighthouse_analyzer.run_lighthouse(url, output_dir="reports/lighthouse")
+        lh_summary = lighthouse_analyzer.summarize_lighthouse(lh_json)
+    except Exception as e:
+        lh_summary = {"error": str(e)}
+
+# Build evidence: combine Lh summary + top page snippets + screenshot path if any
+evidence = []
+if isinstance(lh_summary, dict):
+    evidence.append(f"Lighthouse summary: {lh_summary.get('vitals',{})}")
+# add top N page titles/snippets
+for p in site_summary.get("pages", [])[:3]:
+    evidence.append(f"Page: {p.get('url','')} title: {p.get('title','')}, score:{p.get('score')}")
+# Playwright screenshot path if created (if crawl stores screenshot path in result)
+screenshot_path = site_summary.get("screenshot_path")
+if screenshot_path:
+    evidence.append(f"Screenshot: {screenshot_path}")
+
+llm_res = llm_helper.generate_analysis(PROMPT_NAME, evidence, model=os.getenv("OLLAMA_MODEL","phi3:mini"))
+# store or attach llm_res["result"] into reports via upsert_site_analysis_result or save_report
+
+
 SLEEP_SECONDS = int(os.getenv("WORKER_INTERVAL_SECONDS", "600"))
 TARGET_SITE_MAX_PAGES = int(os.getenv("TARGET_SITE_MAX_PAGES", "5"))
 URL_BATCH_SIZE = int(os.getenv("URL_BATCH_SIZE", "3"))

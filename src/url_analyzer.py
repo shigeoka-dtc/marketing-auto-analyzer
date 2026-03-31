@@ -7,6 +7,26 @@ import requests
 from bs4 import BeautifulSoup
 
 from src.url_security import assert_safe_target_url
+from src.playwright_crawler import crawl_page as _crawl_with_playwright
+
+USE_PLAYWRIGHT = os.getenv("USE_PLAYWRIGHT", "false").lower() in ("1","true","yes")
+
+def analyze_url(url: str, include_internal_links: bool = False) -> dict:
+    if USE_PLAYWRIGHT:
+        # Render with Playwright and read the generated HTML
+        pd = _crawl_with_playwright(url, headless=os.getenv("PLAYWRIGHT_HEADLESS","true").lower() in ("1","true","yes"))
+        html_path = pd.get("html_path")
+        if not html_path:
+            # fallback to existing fetch behaviour
+            final_url, html = _fetch_html(url)
+        else:
+            final_url = url  # playwright returns content of the requested URL
+            with open(html_path, "r", encoding="utf-8") as fh:
+                html = fh.read()
+    else:
+        final_url, html = _fetch_html(url)
+
+    return _analyze_html(final_url, html, include_internal_links=include_internal_links)
 
 HEADERS = {
     "User-Agent": (
