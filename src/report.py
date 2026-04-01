@@ -74,6 +74,20 @@ def _opportunity_channels(diagnostics: pd.DataFrame | None) -> pd.DataFrame:
     return diagnostics[diagnostics["status"] == "opportunity"].head(2)
 
 
+def _get_vision_analyses(url_results: list) -> list:
+    """Extract Vision LP analysis results from url_results."""
+    vision_rows = []
+    for result in url_results:
+        vision_analyses = result.get("vision_analyses", [])
+        for vision in vision_analyses:
+            vision_rows.append([
+                result.get("url", "-"),
+                vision.get("url", "-"),
+                vision.get("vision_analysis", "No analysis") if vision.get("vision_analysis") else "Skipped"
+            ])
+    return vision_rows
+
+
 def _weakest_site(url_results: list) -> dict | None:
     actionable_results = [result for result in url_results if is_actionable_site_result(result)]
     if not actionable_results:
@@ -496,6 +510,7 @@ def render_marketing_report(
     roadmap_rows = _build_roadmap_rows(recommendations, url_results)
     transformation_rows = _build_90_day_program_rows(recommendations, url_results)
     ab_test_rows = _build_ab_test_rows(url_results)
+    vision_rows = _get_vision_analyses(url_results)
     deep_analysis = deep_analysis or {}
     deep_analysis_mode = deep_analysis.get("mode", "n/a")
     deep_analysis_note = deep_analysis.get("note", "deep analysis unavailable")
@@ -540,6 +555,12 @@ Generated: {datetime.now(UTC).isoformat()}
     ["Site", "Page", "Score", "CTA", "Findings", "Improvements"],
     weak_page_rows,
 )}
+
+## Vision LP Analysis
+{_markdown_table(
+    ["Site", "Page", "Design Analysis"],
+    vision_rows,
+) if vision_rows else "Vision analysis not available"}
 
 ## Strategic Diagnosis
 ### Executive Diagnosis
