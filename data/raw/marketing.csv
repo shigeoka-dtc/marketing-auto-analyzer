@@ -1,7 +1,7 @@
-date,channel,campaign,sessions,users,conversions,revenue,cost
-2026-03-20,google,campaign_a,1200,900,42,180000,70000
-2026-03-20,meta,campaign_b,900,740,21,90000,65000
-2026-03-21,google,campaign_a,1300,960,44,190000,72000
-2026-03-21,meta,campaign_b,950,760,19,85000,67000
-2026-03-22,google,campaign_a,1400,1000,51,220000,76000
-2026-03-22,meta,campaign_b,1000,790,18,80000,70000
+date,channel,campaign,sessions,users,conversions,revenue,cost,bounce_rate,avg_session_duration,page_views,new_users
+2026-03-20,google,campaign_a,1200,900,42,180000,70000,0.38,285,5.2,450
+2026-03-20,meta,campaign_b,900,740,21,90000,65000,0.52,198,3.8,296
+2026-03-21,google,campaign_a,1300,960,44,190000,72000,0.35,312,5.8,576
+2026-03-21,meta,campaign_b,950,760,19,85000,67000,0.48,215,4.1,304
+2026-03-22,google,campaign_a,1400,1000,51,220000,76000,0.32,358,6.2,650
+2026-03-22,meta,campaign_b,1000,790,18,80000,70000,0.55,172,3.5,237

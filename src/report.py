@@ -1,9 +1,15 @@
 from datetime import UTC, datetime
 from pathlib import Path
+import logging
+import json
+import csv
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 
 from src.site_results_service import is_actionable_site_result, site_result_status
+
+logger = logging.getLogger(__name__)
 
 
 def save_report(title: str, body: str):
@@ -11,6 +17,45 @@ def save_report(title: str, body: str):
     ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     path = Path("reports") / f"{ts}_{title}.md"
     path.write_text(body, encoding="utf-8")
+    return str(path)
+
+
+def save_report_json(title: str, data: dict, latest: bool = False):
+    """Save report data as JSON for machine consumption."""
+    Path("reports").mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    
+    path = Path("reports") / f"{ts}_{title}.json"
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    
+    if latest:
+        latest_path = Path("reports") / f"{title}_latest.json"
+        latest_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    
+    return str(path)
+
+
+def save_report_csv(title: str, rows: list[dict], latest: bool = False):
+    """Save action queue as CSV for task management tools."""
+    Path("reports").mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    
+    path = Path("reports") / f"{ts}_{title}.csv"
+    
+    if rows:
+        with open(path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+    
+    if latest:
+        latest_path = Path("reports") / f"{title}_latest.csv"
+        if rows:
+            with open(latest_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+                writer.writeheader()
+                writer.writerows(rows)
+    
     return str(path)
 
 
@@ -398,6 +443,186 @@ def _build_expected_impact(snapshot: dict, url_results: list) -> str:
     return "\n".join(lines)
 
 
+def _calculate_confidence(evidence_count: int, source_types: int = 1) -> float:
+    """Calculate confidence score based on evidence count and source diversity."""
+    if evidence_count >= 5 and source_types >= 2:
+        return 0.90
+    elif evidence_count >= 3 and source_types >= 2:
+        return 0.80
+    elif evidence_count >= 3 or source_types >= 2:
+        return 0.70
+    elif evidence_count >= 1:
+        return 0.60
+    else:
+        return 0.40
+
+
+def _build_do_watch_ignore(
+    recommendations: list,
+    alerts: list,
+    diagnostics: pd.DataFrame | None,
+    url_results: list,
+) -> tuple[list[str], list[str], list[str]]:
+    """Build Do/Watch/Ignore priority buckets."""
+    do_actions = []
+    watch_actions = []
+    ignore_actions = []
+
+    # Collect all possible actions
+    all_candidates = []
+
+    # From recommendations
+    for rec in recommendations[:5]:
+        priority = rec.get("priority", "")
+        all_candidates.append({
+            "severity": 0 if priority == "P1" else (1 if priority == "P2" else 2),
+            "text": f"{rec.get('channel')} / {rec.get('issue')} → {rec.get('action')}",
+            "type": "recommendation",
+        })
+
+    # From alerts
+    for alert in alerts[:3]:
+        severity_map = {"critical": 0, "warning": 1, "info": 2}
+        all_candidates.append({
+            "severity": severity_map.get(alert.get("severity", "info"), 2),
+            "text": f"{alert.get('message')}",
+            "type": "alert",
+        })
+
+    # From weak pages
+    weakest_site = _weakest_site(url_results)
+    if weakest_site:
+        for page in weakest_site.get("weak_pages", [])[:2]:
+            improvements = page.get("improvements", [])
+            if improvements:
+                all_candidates.append({
+                    "severity": 0 if page.get("score", 100) < 60 else 1,
+                    "text": f"{page.get('url')} / {improvements[0]}",
+                    "type": "page",
+                })
+
+    # Sort by severity and distribute
+    all_candidates.sort(key=lambda x: x["severity"])
+
+    for i, candidate in enumerate(all_candidates):
+        if i < 3:
+            do_actions.append(candidate["text"])
+        elif i < 6:
+            watch_actions.append(candidate["text"])
+        else:
+            ignore_actions.append(candidate["text"])
+
+    return (
+        do_actions or ["特に即実行すべき項目がない場合は、現状監視体制を整える"],
+        watch_actions or ["特に確認待ちなし"],
+        ignore_actions or ["無視してよい項目なし"],
+    )
+
+
+def _build_root_cause_table(
+    recommendations: list,
+    diagnostics: pd.DataFrame | None,
+    url_results: list,
+) -> list[list[str]]:
+    """Build Root Cause analysis table with confidence scores."""
+    rows = []
+
+    for rec in recommendations[:5]:
+        evidence_count = 1  # At minimum, the recommendation itself is evidence
+        source_types = 1
+
+        # Check if there's supporting data
+        if diagnostics is not None and not diagnostics.empty:
+            matching = diagnostics[diagnostics["channel"] == rec.get("channel")]
+            if not matching.empty:
+                evidence_count += 1
+                source_types += 1
+
+        # Check if there's LP/site evidence
+        weakest_site = _weakest_site(url_results)
+        if weakest_site and rec.get("channel") in ["LP", "Site"]:
+            evidence_count += len(weakest_site.get("weak_pages", []))
+            source_types += 1
+
+        confidence = _calculate_confidence(evidence_count, source_types)
+        estimated_impact = f"月商 {_fmt_currency(rec.get('impact_value', 0))}"
+
+        rows.append([
+            rec.get("priority", "-"),
+            rec.get("issue", "-"),
+            rec.get("reason", "-"),
+            f"{evidence_count}件",
+            f"{confidence:.2f}",
+            estimated_impact,
+            rec.get("action", "-"),
+            "マーケ/制作" if rec.get("channel") in ["LP", "Site"] else "広告運用",
+        ])
+
+    return rows
+
+
+def _build_action_queue(
+    recommendations: list,
+    url_results: list,
+) -> list[dict]:
+    """Build actionable queue with ticket-like format."""
+    actions = []
+
+    weakest_site = _weakest_site(url_results)
+    weakest_page = None
+    if weakest_site and weakest_site.get("weak_pages"):
+        weakest_page = weakest_site["weak_pages"][0]
+
+    for i, rec in enumerate(recommendations[:3]):
+        action_item = {
+            "index": i + 1,
+            "title": rec.get("action", "-"),
+            "why_now": f"{rec.get('issue')} / {rec.get('reason')}",
+            "exact_change": rec.get("reason", "-"),
+            "target": rec.get("channel", "-"),
+            "kpi": "CVR / ROAS / CPA",
+            "effort": "S" if i == 0 else ("M" if i == 1 else "L"),
+            "due": "今週" if i == 0 else ("来週" if i == 1 else "2週間以内"),
+            "dependency": "なし" if i == 0 else (f"Task {i}" if i > 0 else ""),
+        }
+        actions.append(action_item)
+
+    return actions
+
+
+def _build_strategic_lp_section(url_results: list) -> str:
+    """Build strategic LP analysis section from site results."""
+    content_lines = []
+    
+    for result in url_results:
+        strategic_analyses = result.get("strategic_lp_analyses", [])
+        if not strategic_analyses:
+            continue
+        
+        for analysis in strategic_analyses:
+            url = analysis.get("url", "-")
+            sections = analysis.get("sections", {})
+            
+            # Format each section
+            for section_name, section_content in sections.items():
+                if section_content:
+                    content_lines.append(f"#### {url} - {section_name}")
+                    if isinstance(section_content, dict):
+                        for key, value in section_content.items():
+                            content_lines.append(f"- **{key}**: {value}")
+                    elif isinstance(section_content, list):
+                        for item in section_content:
+                            content_lines.append(f"- {item}")
+                    else:
+                        content_lines.append(str(section_content))
+                    content_lines.append("")
+    
+    if not content_lines:
+        return "_戦略的LP分析はまだ完了していません_"
+    
+    return "\n".join(content_lines)
+
+
 def render_marketing_report(
     *,
     snapshot: dict,
@@ -406,6 +631,7 @@ def render_marketing_report(
     llm_summary: str,
     deep_analysis: dict | None = None,
 ):
+    """新しいレポート構造: 決めるもの → 根拠 → 詳細"""
     latest = snapshot["latest"]
     kpis = snapshot["kpis"]
     alerts = snapshot["alerts"]
@@ -414,49 +640,50 @@ def render_marketing_report(
     latest_totals = latest.get("latest", {})
     latest_delta = latest.get("delta_vs_previous", {})
 
-    latest_lines = [
-        f"- 最新日: {latest.get('latest_date') or '-'}",
-        f"- 比較基準日: {latest.get('previous_date') or 'なし'}",
-    ]
+    # === DECISION BRIEF ===
+    do_actions, watch_actions, ignore_actions = _build_do_watch_ignore(
+        recommendations, alerts, diagnostics, url_results
+    )
 
-    if latest_totals:
-        latest_lines.extend(
-            [
-                f"- 売上: {_fmt_currency(latest_totals.get('revenue'))} ({_fmt_delta(latest_delta.get('revenue'))})",
-                f"- CV: {_fmt_int(latest_totals.get('conversions'))} ({_fmt_delta(latest_delta.get('conversions'))})",
-                f"- 広告費: {_fmt_currency(latest_totals.get('cost'))} ({_fmt_delta(latest_delta.get('cost'))})",
-                f"- ROAS: {_fmt_ratio(latest_totals.get('roas'))} ({_fmt_delta(latest_delta.get('roas'))})",
-                f"- CVR: {_fmt_pct(latest_totals.get('cvr'))} ({_fmt_delta(latest_delta.get('cvr'))})",
-            ]
-        )
-
-    kpi_lines = [
-        f"- Sessions: {_fmt_int(kpis.get('sessions'))}",
-        f"- Users: {_fmt_int(kpis.get('users'))}",
-        f"- Conversions: {_fmt_int(kpis.get('conversions'))}",
-        f"- Revenue: {_fmt_currency(kpis.get('revenue'))}",
-        f"- Cost: {_fmt_currency(kpis.get('cost'))}",
-        f"- ROAS: {_fmt_ratio(kpis.get('roas'))}",
-        f"- CPA: {_fmt_currency(kpis.get('cpa'))}",
-        f"- CVR: {_fmt_pct(kpis.get('cvr'))}",
-    ]
-
-    alert_lines = [
-        f"- [{alert['severity'].upper()}] {alert['message']}"
-        for alert in alerts
-    ] or ["- 大きな異常は検出されませんでした。"]
-
-    recommendation_rows = [
+    decision_brief = "\n".join(
         [
-            rec["priority"],
-            rec["channel"],
-            rec["issue"],
-            rec["action"],
-            rec["reason"],
+            "### 今日やること",
+            *[f"{i+1}. {action}" for i, action in enumerate(do_actions[:3])],
+            "",
+            "### 監視する（確認待ち）",
+            *[f"- {action}" for action in watch_actions[:3]],
+            "",
+            "### 無視していい（単日ブレ）",
+            *[f"- {action}" for action in ignore_actions[:3]],
         ]
-        for rec in recommendations
-    ]
+    )
 
+    # === ROOT CAUSE TABLE ===
+    root_cause_rows = _build_root_cause_table(recommendations, diagnostics, url_results)
+    root_cause_table = _markdown_table(
+        ["Priority", "Symptom", "Root Cause", "Evidence", "Confidence", "Est. Impact", "Action", "Owner"],
+        root_cause_rows,
+    )
+
+    # === ACTION QUEUE ===
+    action_queue_items = _build_action_queue(recommendations, url_results)
+    action_queue_body = ""
+    for item in action_queue_items:
+        action_queue_body += f"""
+**{item['index']}. {item['title']}**
+- why_now: {item['why_now']}
+- exact_change: {item['exact_change']}
+- target: {item['target']}
+- expected_kpi: {item['kpi']}
+- effort: {item['effort']} | due: {item['due']} | dependency: {item['dependency']}
+"""
+
+    # === EVIDENCE BASE ===
+    deep_analysis = deep_analysis or {}
+    deep_analysis_mode = deep_analysis.get("mode", "n/a")
+    evidence_base = _build_evidence_base(snapshot, url_results, deep_analysis_mode)
+
+    # === CHANNEL / LP DIAGNOSTICS ===
     diagnostic_rows = []
     if diagnostics is not None and not diagnostics.empty:
         for _, row in diagnostics.iterrows():
@@ -465,13 +692,17 @@ def render_marketing_report(
                     row["channel"],
                     row["status"],
                     _fmt_currency(row["revenue"]),
-                    _fmt_currency(row["cost"]),
                     _fmt_ratio(row["roas"]),
                     _fmt_delta(row["revenue_delta_pct"]),
                     _fmt_delta(row["cvr_delta_pct"]),
                     row["reason"],
                 ]
             )
+
+    channel_diagnostics_table = _markdown_table(
+        ["Channel", "Status", "Revenue", "ROAS", "Revenue Δ", "CVR Δ", "Reason"],
+        diagnostic_rows,
+    )
 
     site_rows = []
     weak_page_rows = []
@@ -480,11 +711,9 @@ def render_marketing_report(
             [
                 result.get("url"),
                 _fmt_analysis_status(site_result_status(result)),
-                result.get("analyzed_at") or "-",
-                result.get("page_count", 0),
                 result.get("score", "-") if result.get("score") is not None else "-",
-                ", ".join(result.get("site_findings", [])[:4]) or "-",
-                ", ".join(result.get("site_improvements", [])[:4]) or "-",
+                result.get("page_count", 0),
+                ", ".join(result.get("site_findings", [])[:3]) or "-",
             ]
         )
 
@@ -496,9 +725,54 @@ def render_marketing_report(
                     page.get("score"),
                     page.get("cta_count", 0),
                     ", ".join(page.get("findings", [])[:3]) or "-",
-                    ", ".join(page.get("improvements", [])[:3]) or "-",
                 ]
             )
+
+    site_results_table = _markdown_table(
+        ["Site", "Status", "Avg Score", "Pages", "Findings"],
+        site_rows,
+    )
+
+    weak_pages_table = _markdown_table(
+        ["Site", "Page", "Score", "CTA", "Findings"],
+        weak_page_rows,
+    ) if weak_page_rows else "_弱いページなし_"
+
+    # === AB TEST BACKLOG ===
+    ab_test_rows = _build_ab_test_rows(url_results)
+
+    # === APPENDIX: 30-Day Roadmap, 90-Day Program ===
+    roadmap_rows = _build_roadmap_rows(recommendations, url_results)
+    transformation_rows = _build_90_day_program_rows(recommendations, url_results)
+
+    # === LATEST SNAPSHOT (移動: Appendix へ) ===
+    latest_lines = [
+        f"- 最新日: {latest.get('latest_date') or '-'}",
+        f"- 比較基準日: {latest.get('previous_date') or 'なし'}",
+    ]
+    if latest_totals:
+        latest_lines.extend([
+            f"- 売上: {_fmt_currency(latest_totals.get('revenue'))} ({_fmt_delta(latest_delta.get('revenue'))})",
+            f"- CV: {_fmt_int(latest_totals.get('conversions'))} ({_fmt_delta(latest_delta.get('conversions'))})",
+            f"- ROAS: {_fmt_ratio(latest_totals.get('roas'))} ({_fmt_delta(latest_delta.get('roas'))})",
+            f"- CVR: {_fmt_pct(latest_totals.get('cvr'))} ({_fmt_delta(latest_delta.get('cvr'))})",
+        ])
+
+    kpi_lines = [
+        f"- Sessions: {_fmt_int(kpis.get('sessions'))}",
+        f"- Users: {_fmt_int(kpis.get('users'))}",
+        f"- Conversions: {_fmt_int(kpis.get('conversions'))}",
+        f"- Revenue: {_fmt_currency(kpis.get('revenue'))}",
+        f"- ROAS: {_fmt_ratio(kpis.get('roas'))}",
+        f"- CPA: {_fmt_currency(kpis.get('cpa'))}",
+    ]
+
+    alert_lines = [
+        f"- [{alert['severity'].upper()}] {alert['message']}"
+        for alert in alerts
+    ] or ["- 大きな異常は検出されませんでした。"]
+
+    vision_rows = _get_vision_analyses(url_results)
 
     error_lines = []
     for result in url_results:
@@ -507,62 +781,77 @@ def render_marketing_report(
     if not error_lines:
         error_lines = ["- サイト巡回エラーなし"]
 
-    roadmap_rows = _build_roadmap_rows(recommendations, url_results)
-    transformation_rows = _build_90_day_program_rows(recommendations, url_results)
-    ab_test_rows = _build_ab_test_rows(url_results)
-    vision_rows = _get_vision_analyses(url_results)
-    deep_analysis = deep_analysis or {}
-    deep_analysis_mode = deep_analysis.get("mode", "n/a")
-    deep_analysis_note = deep_analysis.get("note", "deep analysis unavailable")
-    deep_analysis_body = deep_analysis.get("body", "_deep analysis unavailable_")
-
-    return f"""# Daily Marketing Analysis
+    # === BUILD FINAL REPORT ===
+    markdown_report = f"""# Daily Marketing Analysis
 
 Generated: {datetime.now(UTC).isoformat()}
 
-## Latest Snapshot
-{chr(10).join(latest_lines)}
+## Decision Brief
+
+{decision_brief}
+
+---
+
+## Root Cause Analysis
+
+分析者がすぐに判断できるよう、原因・根拠・信頼度を一覧化します。
+
+{root_cause_table}
+
+---
+
+## Action Queue
+
+チケット化形式。そのまま Jira / Notion に貼れます。
+
+{action_queue_body}
+
+---
 
 ## Evidence Base
-{_build_evidence_base(snapshot, url_results, deep_analysis_mode)}
 
-## Period KPI
+分析の基礎データです。
+
+{evidence_base}
+
+### Period KPI
 {chr(10).join(kpi_lines)}
 
-## Alerts
+### Latest Snapshot
+{chr(10).join(latest_lines)}
+
+### Alerts
 {chr(10).join(alert_lines)}
 
-## Priority Actions
-{_markdown_table(
-    ["Priority", "Channel", "Issue", "Action", "Reason"],
-    recommendation_rows,
-)}
+---
 
 ## Channel Diagnostics
-{_markdown_table(
-    ["Channel", "Status", "Revenue", "Cost", "ROAS", "Revenue Δ", "CVR Δ", "Reason"],
-    diagnostic_rows,
-)}
 
-## Site Results
-{_markdown_table(
-    ["Site", "Status", "Analyzed At", "Pages", "Avg Score", "Findings", "Improvements"],
-    site_rows,
-)}
+{channel_diagnostics_table}
 
-## Weak Pages
-{_markdown_table(
-    ["Site", "Page", "Score", "CTA", "Findings", "Improvements"],
-    weak_page_rows,
-)}
+---
 
-## Vision LP Analysis
-{_markdown_table(
-    ["Site", "Page", "Design Analysis"],
-    vision_rows,
-) if vision_rows else "Vision analysis not available"}
+## Site & LP Analysis
+
+### Site Results
+{site_results_table}
+
+### Weak Pages
+{weak_pages_table}
+
+### Vision LP Analysis
+{_markdown_table(["Site", "Page", "Design Analysis"], vision_rows) if vision_rows else "_Vision analysis not available_"}
+
+---
+
+## AB Test Backlog
+
+{_markdown_table(["Priority", "Page", "Hypothesis", "Pattern A", "Pattern B", "Measure"], ab_test_rows)}
+
+---
 
 ## Strategic Diagnosis
+
 ### Executive Diagnosis
 {_build_executive_diagnosis(snapshot, recommendations, url_results)}
 
@@ -575,39 +864,83 @@ Generated: {datetime.now(UTC).isoformat()}
 ### CRO Perspective
 {_build_cro_perspectives(url_results)}
 
-## 30-Day Roadmap
-{_markdown_table(
-    ["Phase", "Goal", "What To Change", "KPI"],
-    roadmap_rows,
-)}
+---
 
-## 90-Day Transformation Program
-{_markdown_table(
-    ["Window", "Theme", "Focus", "Owner", "Success Signal"],
-    transformation_rows,
-)}
+## Appendix
 
-## AB Test Backlog
-{_markdown_table(
-    ["Priority", "Page", "Hypothesis", "Pattern A", "Pattern B", "Measure"],
-    ab_test_rows,
-)}
+### 30-Day Roadmap
+{_markdown_table(["Phase", "Goal", "What To Change", "KPI"], roadmap_rows)}
 
-## Measurement Plan
+### 90-Day Transformation Program
+{_markdown_table(["Window", "Theme", "Focus", "Owner", "Success Signal"], transformation_rows)}
+
+### Measurement Plan
 {_build_measurement_lines()}
 
-## Expected Impact
+### Expected Impact
 {_build_expected_impact(snapshot, url_results)}
 
-## Deep AI Analysis
+### Deep AI Analysis
 - mode: {deep_analysis_mode}
-- note: {deep_analysis_note}
+- note: {deep_analysis.get("note", "deep analysis unavailable")}
 
-{deep_analysis_body}
+{deep_analysis.get("body", "_deep analysis unavailable_")}
 
-## Site Crawl Errors
+### Strategic LP Analysis
+
+{_build_strategic_lp_section(url_results)}
+
+### Site Crawl Errors
 {chr(10).join(error_lines)}
 
-## LLM Summary
+### LLM Summary
 {llm_summary or "LLM summary unavailable"}
 """
+
+    # === SAVE MACHINE-READABLE OUTPUTS ===
+    # Prepare JSON data
+    report_json_data = {
+        "timestamp": datetime.now(UTC).isoformat(),
+        "generated_at": latest.get("latest_date"),
+        "kpi": kpis,
+        "latest": latest_totals,
+        "latest_delta": latest_delta,
+        "alerts": alerts,
+        "do_actions": do_actions,
+        "watch_actions": watch_actions,
+        "ignore_actions": ignore_actions,
+        "root_causes": root_cause_rows,
+        "action_queue": action_queue_items,
+    }
+    
+    # Prepare CSV data (action queue)
+    action_csv_rows = [
+        {
+            "no": item["index"],
+            "title": item["title"],
+            "why_now": item["why_now"],
+            "exact_change": item["exact_change"],
+            "target": item["target"],
+            "expected_kpi": item["kpi"],
+            "effort": item["effort"],
+            "due": item["due"],
+            "dependency": item["dependency"],
+        }
+        for item in action_queue_items
+    ]
+    
+    # Save JSON and CSV (async, non-blocking)
+    
+    def save_sidecars():
+        try:
+            save_report_json("daily_analysis", report_json_data, latest=True)
+            save_report_csv("daily_analysis_actions", action_csv_rows, latest=True)
+        except Exception as e:
+            logger.warning(f"Failed to save JSON/CSV sidecars: {e}")
+    
+    # Use thread pool to save sidecars without blocking main report generation
+    executor = ThreadPoolExecutor(max_workers=1)
+    executor.submit(save_sidecars)
+    executor.shutdown(wait=False)
+    
+    return markdown_report

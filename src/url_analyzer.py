@@ -14,6 +14,7 @@ from src.playwright_crawler import crawl_page as _crawl_with_playwright
 # Configuration from environment
 USE_PLAYWRIGHT = os.getenv("USE_PLAYWRIGHT", "false").lower() in ("1", "true", "yes")
 PLAYWRIGHT_HEADLESS = os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() in ("1", "true", "yes")
+VISION_ANALYSIS_ENABLED = os.getenv("VISION_ANALYSIS_ENABLED", "false").lower() in ("1", "true", "yes")
 URL_ANALYSIS_TIMEOUT = int(os.getenv("URL_ANALYSIS_TIMEOUT", "20"))
 URL_ANALYSIS_MAX_REDIRECTS = 5
 MAX_INTERNAL_LINKS_PER_PAGE = 20
@@ -81,7 +82,7 @@ def _normalize_url(url: str) -> str:
 def analyze_url(url: str, include_internal_links: bool = False) -> dict:
     """
     Analyze a URL using Playwright if available, otherwise use requests.
-    Returns page analysis with screenshot_path and body_excerpt if available.
+    Returns page analysis with screenshot_path, body_excerpt, and Vision analysis if enabled.
     """
     final_url = url
     html = None
@@ -116,6 +117,18 @@ def analyze_url(url: str, include_internal_links: bool = False) -> dict:
     
     if screenshot_path:
         page_result["screenshot_path"] = screenshot_path
+        
+        # Vision AI 分析を実行（フラグが有効な場合）
+        if VISION_ANALYSIS_ENABLED:
+            logger.info(f"Running Vision analysis for {url}")
+            vision_result = analyze_url_with_vision(url, screenshot_path)
+            if vision_result.get("vision_analysis"):
+                page_result["vision_analysis"] = vision_result["vision_analysis"]
+                logger.info(f"Vision analysis successful: {len(vision_result['vision_analysis'])} chars")
+            else:
+                error_msg = vision_result.get("vision_error", "Unknown error")
+                page_result["vision_error"] = error_msg
+                logger.warning(f"Vision analysis failed: {error_msg}")
 
     return page_result
 
@@ -315,20 +328,35 @@ def analyze_url_with_vision(url: str, screenshot_path: str | None = None) -> dic
     Analyze URL design using Vision AI (LLaVA).
     Requires screenshot_path to be provided or generated via Playwright.
     Returns Vision analysis insights (design score, CTA optimization, improvements, etc.).
+    
+    Args:
+        url: 分析対象URL
+        screenshot_path: LPのスクリーンショットファイルパス
+    
+    Returns:
+        {
+            "vision_analysis": str or None,
+            "vision_error": str or None,
+            "vision_screenshot": str or None,
+        }
     """
     if not screenshot_path or not os.path.exists(screenshot_path):
+        error_msg = f"Screenshot not found or not provided: {screenshot_path}"
+        logger.warning(f"{url}: {error_msg}")
         return {
             "vision_analysis": None,
-            "vision_error": "No screenshot available for Vision analysis",
+            "vision_error": error_msg,
         }
     
     try:
         from src.llm_client import ask_llm_vision
         from src.llm_helper import load_prompt
         
+        logger.info(f"Loading Vision prompt for {url}")
         # Load Vision prompt
         vision_prompt = load_prompt("vision_lp_analysis.md")
         
+        logger.info(f"Calling Vision LLM for {url} with image: {screenshot_path}")
         # Call Vision LLM
         vision_response = ask_llm_vision(
             prompt=vision_prompt,
@@ -337,20 +365,31 @@ def analyze_url_with_vision(url: str, screenshot_path: str | None = None) -> dic
         )
         
         if vision_response.startswith("[Vision LLM"):
+            error_msg = vision_response
+            logger.warning(f"{url}: Vision LLM error: {error_msg}")
             return {
                 "vision_analysis": None,
-                "vision_error": vision_response,
+                "vision_error": error_msg,
             }
         
+        logger.info(f"{url}: Vision analysis successful ({len(vision_response)} chars)")
         return {
             "vision_analysis": vision_response,
             "vision_screenshot": screenshot_path,
         }
-    except Exception as e:
-        logger.warning("Vision analysis failed for %s: %s", url, e)
+    except FileNotFoundError as e:
+        error_msg = f"Vision prompt not found: {e}"
+        logger.error(f"{url}: {error_msg}")
         return {
             "vision_analysis": None,
-            "vision_error": str(e),
+            "vision_error": error_msg,
+        }
+    except Exception as e:
+        error_msg = f"Vision analysis exception: {type(e).__name__}: {str(e)}"
+        logger.error(f"{url}: {error_msg}", exc_info=True)
+        return {
+            "vision_analysis": None,
+            "vision_error": error_msg,
         }
 
 

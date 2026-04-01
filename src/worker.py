@@ -12,7 +12,8 @@ from src.recommend import generate_recommendations
 from src.recommend_enhanced import enhance_recommendations_with_quantified_impact
 from src.forecasting import add_forecasts_to_analysis
 from src.impact_analysis import analyze_initiative_impact
-from src.report import render_marketing_report, save_report
+from src.strategic_lp_analysis import generate_strategic_lp_analysis_report
+from src.report import render_marketing_report, save_report, save_report_json, save_report_csv
 from src.site_results_service import (
     build_site_error_result,
     compact_site_results,
@@ -218,6 +219,37 @@ def run_cycle(
                         logger.exception("LLM generation failed for %s: %s", url, e)
                 else:
                     logger.info("Skipping LLM generation for %s", url)
+                
+                # ===== Strategic LP Analysis (最も弱いページを深掘り) =====
+                strategic_lp_analyses = []
+                if not skip_llm and result.get("weak_pages"):
+                    try:
+                        for weak_page in result.get("weak_pages", [])[:2]:  # Top 2 weakest pages
+                            weak_url = weak_page.get("url")
+                            page_html = weak_page.get("html", "")
+                            page_excerpt = weak_page.get("body_excerpt", "")
+                            
+                            if page_html or page_excerpt:
+                                logger.info("Strategic LP analysis for weak page: %s", weak_url)
+                                lp_report = generate_strategic_lp_analysis_report(
+                                    weak_url,
+                                    page_html,
+                                    page_excerpt,
+                                    service_description=""
+                                )
+                                strategic_lp_analyses.append(lp_report)
+                                logger.info("Strategic LP analysis completed for %s", weak_url)
+                    except Exception as e:
+                        logger.warning("Strategic LP analysis failed: %s", e)
+                
+                if strategic_lp_analyses:
+                    upsert_site_analysis_result(
+                        {
+                            **result,
+                            "strategic_lp_analyses": strategic_lp_analyses
+                        },
+                        analysis_status="success",
+                    )
             except Exception:
                 logger.exception("Post-analysis processing failed for %s", url)
 
