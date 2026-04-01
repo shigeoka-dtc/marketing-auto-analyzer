@@ -4,6 +4,12 @@ services:
     build: .
     user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+        reservations:
+          memory: 5G
     volumes:
       - ./data:/app/data
       - ./db:/app/db
@@ -39,6 +45,12 @@ services:
     build: .
     user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1.5G
     volumes:
       - ./data:/app/data
       - ./db:/app/db

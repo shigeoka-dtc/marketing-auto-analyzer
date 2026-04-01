@@ -34,11 +34,15 @@ from src.url_analyzer import analyze_site
 from src.url_targets import load_target_urls, target_urls_file_exists
 from src import lighthouse_analyzer
 from src import llm_helper
+from src import rag_utils
 
 # Configuration constants from environment
 USE_LIGHTHOUSE = os.getenv("USE_LIGHTHOUSE", "true").lower() in ("1", "true", "yes")
 ENABLE_FORECASTING = os.getenv("FORECASTING_ENABLED", "true").lower() in ("1", "true", "yes")
 ENABLE_IMPACT_ANALYSIS = os.getenv("IMPACT_ANALYSIS_ENABLED", "true").lower() in ("1", "true", "yes")
+RAG_ENABLED = os.getenv("RAG_ENABLED", "false").lower() in ("1", "true", "yes")
+MULTI_AGENT_ENABLED = os.getenv("MULTI_AGENT_ENABLED", "false").lower() in ("1", "true", "yes")
+AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "8"))
 PROMPT_NAME = "deep_analysis.md"
 TARGET_SITE_MAX_PAGES = int(os.getenv("TARGET_SITE_MAX_PAGES", "5"))
 URL_BATCH_SIZE = int(os.getenv("URL_BATCH_SIZE", "3"))
@@ -163,8 +167,11 @@ def run_cycle(
 
                 # Build evidence
                 evidence = []
+                vision_analyses = []
+                
                 if isinstance(lh_summary, dict) and lh_summary.get("vitals"):
                     evidence.append(f"Lighthouse vitals: {lh_summary.get('vitals')}")
+                
                 # Add up to 3 page snippets from site result
                 for p in result.get("pages", [])[:3]:
                     title = p.get("title") or ""
@@ -173,6 +180,20 @@ def run_cycle(
                         f"Page: {p.get('url')} title: {title} snippet: {snippet} "
                         f"score:{p.get('score')}"
                     )
+                    
+                    # ===== Vision AI 分析 =====
+                    if p.get("screenshot_path") and not skip_llm:
+                        try:
+                            vision_result = llm_helper.analyze_vision_lp(p.get("screenshot_path"), p)
+                            if not vision_result.get("skipped"):
+                                vision_analyses.append({
+                                    "url": p.get("url"),
+                                    "vision_analysis": vision_result.get("vision_analysis")
+                                })
+                                logger.info("Vision LP analysis completed for %s", p.get("url"))
+                        except Exception as e:
+                            logger.warning("Vision analysis failed for %s: %s", p.get("url"), e)
+                    
                     if p.get("screenshot_path"):
                         evidence.append(f"Screenshot: {p.get('screenshot_path')}")
 
@@ -184,9 +205,13 @@ def run_cycle(
                             evidence,
                             model=os.getenv("OLLAMA_MODEL", "phi3:mini"),
                         )
-                        # attach LLM result to site record
+                        # Attach LLM result and Vision analyses to site record
                         upsert_site_analysis_result(
-                            {**result, "llm_analysis": llm_res},
+                            {
+                                **result,
+                                "llm_analysis": llm_res,
+                                "vision_analyses": vision_analyses
+                            },
                             analysis_status="success",
                         )
                     except Exception as e:
@@ -246,6 +271,103 @@ def run_cycle(
     )
     path = save_report("daily_analysis", report)
     logger.info("Cycle completed successfully: %s", path)
+    
+    # ===== RAG に分析結果を保存 =====
+    if RAG_ENABLED:
+        try:
+            collection = rag_utils.get_rag_collection()
+            if collection:
+                # レポートを保存
+                rag_utils.add_report_to_rag(collection, path, report)
+                
+                # 各サイト分析結果を保存
+                for result in all_site_results:
+                    rag_utils.add_site_analysis_to_rag(collection, result.get("url", ""), result)
+                
+                # レコメンデーションを保存
+                rag_utils.add_recommendations_to_rag(collection, recommendations)
+                
+                logger.info("RAG documents updated")
+        except Exception as e:
+            logger.warning(f"RAG update failed: {e}")
+    
+    # ===== Multi-Agent 分析実行 =====
+    if MULTI_AGENT_ENABLED:
+        try:
+            from src.agents import PlannerAgent, AnalystAgent, CopywriterAgent, ValidatorAgent
+            
+            logger.info("Starting Multi-Agent analysis...")
+            
+            # Analyst: データ深掘り分析
+            analyst = AnalystAgent()
+            analyst_context = {
+                "channels": snapshot.get("channels", {}),
+                "diagnostics": snapshot.get("diagnostics", {}),
+                "alerts": snapshot.get("alerts", [])
+            }
+            analyst_result = analyst.analyze_anomalies(
+                analyst_context,
+                snapshot.get("alerts", [])
+            )
+            logger.info("Analyst completed")
+            
+            # Planner: 戦略立案
+            planner = PlannerAgent()
+            planner_context = {
+                "snapshot": snapshot,
+                "recommendations": recommendations,
+                "analyst_findings": analyst_result.get("analysis", "")
+            }
+            planner_result = planner.plan_strategy(planner_context, AGENT_MAX_ITERATIONS)
+            logger.info("Planner completed")
+            
+            # Copywriter: 施策テキスト生成
+            copywriter = CopywriterAgent()
+            copywriter_context = {
+                "recommendations": recommendations,
+                "site_results": compact_urls
+            }
+            # 最初のサイト/ページのコピー案を生成（簡略化）
+            if all_site_results and all_site_results[0].get("pages"):
+                first_page = all_site_results[0]["pages"][0]
+                copy_variations = copywriter.generate_copy_variations(first_page, num_variations=3)
+                logger.info("Copywriter completed")
+            
+            # Validator: 戦略検証と ROI 最適化
+            validator = ValidatorAgent()
+            validator_context = {
+                "strategy": planner_result.get("strategy", ""),
+                "constraints": {
+                    "budget": 100000,  # 例：月間予算
+                    "team_size": 5,
+                    "timeline_weeks": 12
+                }
+            }
+            validator_result = validator.validate_strategy(
+                planner_result.get("strategy", ""),
+                validator_context.get("constraints", {})
+            )
+            logger.info("Validator completed")
+            
+            # Multi-Agent レポートを追加生成
+            multi_agent_report = render_marketing_report(
+                snapshot=snapshot,
+                recommendations=recommendations,
+                url_results=all_site_results,
+                llm_summary=summary,
+                deep_analysis=deep_analysis,
+                multi_agent_analysis={
+                    "analyst": analyst_result,
+                    "planner": planner_result,
+                    "validator": validator_result
+                }
+            )
+            multi_agent_path = save_report("multi_agent_analysis", multi_agent_report)
+            logger.info("Multi-Agent report saved: %s", multi_agent_path)
+            
+        except Exception as e:
+            logger.warning(f"Multi-Agent analysis failed: {e}")
+    
     return path
 
 

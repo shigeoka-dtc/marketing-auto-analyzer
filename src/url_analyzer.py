@@ -310,6 +310,50 @@ def _analyze_html(url: str, html: str, include_internal_links: bool = False) -> 
     return result
 
 
+def analyze_url_with_vision(url: str, screenshot_path: str | None = None) -> dict:
+    """
+    Analyze URL design using Vision AI (LLaVA).
+    Requires screenshot_path to be provided or generated via Playwright.
+    Returns Vision analysis insights (design score, CTA optimization, improvements, etc.).
+    """
+    if not screenshot_path or not os.path.exists(screenshot_path):
+        return {
+            "vision_analysis": None,
+            "vision_error": "No screenshot available for Vision analysis",
+        }
+    
+    try:
+        from src.llm_client import ask_llm_vision
+        from src.llm_helper import load_prompt
+        
+        # Load Vision prompt
+        vision_prompt = load_prompt("vision_lp_analysis.md")
+        
+        # Call Vision LLM
+        vision_response = ask_llm_vision(
+            prompt=vision_prompt,
+            image_paths=[screenshot_path],
+            num_predict=2000,  # Allow longer responses for Vision analysis
+        )
+        
+        if vision_response.startswith("[Vision LLM"):
+            return {
+                "vision_analysis": None,
+                "vision_error": vision_response,
+            }
+        
+        return {
+            "vision_analysis": vision_response,
+            "vision_screenshot": screenshot_path,
+        }
+    except Exception as e:
+        logger.warning("Vision analysis failed for %s: %s", url, e)
+        return {
+            "vision_analysis": None,
+            "vision_error": str(e),
+        }
+
+
 def _fetch_html(url: str) -> tuple[str, str]:
     """Fetch HTML from URL, handling redirects."""
     current_url = url
