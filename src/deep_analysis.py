@@ -1,11 +1,15 @@
 import os
 from urllib.parse import urlparse
 
-from src.llm_client import ask_llm
+from src.llm_client import ask_llm, ask_llm_with_consistency, _wrap_cot_prompt
 from src.site_results_service import is_actionable_site_result, site_result_status
 
 DEEP_ANALYSIS_ENABLED = os.getenv("DEEP_ANALYSIS_ENABLED", "true").lower() not in {"0", "false", "no"}
 DEEP_ANALYSIS_NUM_PREDICT = int(os.getenv("DEEP_ANALYSIS_NUM_PREDICT", "1200"))
+
+# LLM品質向上設定
+SELF_CONSISTENCY_ENABLED = os.getenv("SELF_CONSISTENCY_ENABLED", "false").lower() not in {"0", "false", "no"}
+CHAIN_OF_THOUGHT_ENABLED = os.getenv("CHAIN_OF_THOUGHT_ENABLED", "false").lower() not in {"0", "false", "no"}
 
 
 def _top_recommendations(recommendations: list) -> list[dict]:
@@ -110,6 +114,15 @@ def build_deep_analysis_context(snapshot: dict, recommendations: list, url_resul
         ]
         diagnostics_rows = diagnostics[columns].head(5).to_dict(orient="records")
 
+    # Extract strategic LP analyses from url_results
+    strategic_lp_analyses = []
+    for site_result in url_results:
+        if site_result.get("strategic_lp_analyses"):
+            strategic_lp_analyses.extend(site_result["strategic_lp_analyses"])
+    
+    # Limit to top 2 or 3 for context size
+    limited_strategic_lp_analyses = strategic_lp_analyses[:2]
+
     return f"""
 Latest Snapshot:
 {snapshot["latest"]}
@@ -128,6 +141,9 @@ Channel Diagnostics:
 
 Site Diagnostics:
 {_site_context(url_results)}
+
+Strategic LP Analyses (Top {len(limited_strategic_lp_analyses)}):
+{limited_strategic_lp_analyses}
 """
 
 
@@ -150,6 +166,9 @@ def build_deep_analysis_prompt(snapshot: dict, recommendations: list, url_result
 ## Message-Market Fit Hypotheses
 - 広告や検索意図とLPのメッセージのズレ仮説
 - 流入チャネル別に優先仮説を書く
+
+## LP Strategic Insights
+- 戦略的LP分析結果から得られる示唆
 
 ## Channel-Specific Messaging Packs
 - google / meta など主要チャネルごとに
@@ -474,16 +493,52 @@ def generate_deep_analysis(snapshot: dict, recommendations: list, url_results: l
         }
 
     prompt = build_deep_analysis_prompt(snapshot, recommendations, url_results)
-    response = ask_llm(prompt, num_predict=DEEP_ANALYSIS_NUM_PREDICT)
-    if response.startswith("[LLM"):
+    
+    # Chain-of-Thought を統合
+    if CHAIN_OF_THOUGHT_ENABLED:
+        prompt = _wrap_cot_prompt(prompt, analysis_type="deep_analysis")
+    
+    # Self-Consistency または通常の LLM 呼び出し
+    if SELF_CONSISTENCY_ENABLED:
+        result = ask_llm_with_consistency(
+            prompt, 
+            num_predict=DEEP_ANALYSIS_NUM_PREDICT,
+            use_rag=True
+        )
+        response = result.get("response", "")
+        confidence = result.get("confidence", 0.0)
+        generation_count = result.get("generation_count", 0)
+        
+        if response.startswith("["):
+            # Self-Consistency が失敗
+            return {
+                "mode": "rule-based",
+                "note": response,
+                "body": build_rule_based_deep_analysis(snapshot, recommendations, url_results),
+            }
+        
         return {
-            "mode": "rule-based",
-            "note": response,
-            "body": build_rule_based_deep_analysis(snapshot, recommendations, url_results),
+            "mode": "llm-with-consistency",
+            "note": f"Self-Consistency投票 ({generation_count}生成, 信頼度={confidence:.2f}) + Chain-of-Thought",
+            "body": response,
         }
+    else:
+        # 通常の LLM 呼び出し
+        response = ask_llm(prompt, num_predict=DEEP_ANALYSIS_NUM_PREDICT, use_rag=True)
+        if response.startswith("[LLM"):
+            return {
+                "mode": "rule-based",
+                "note": response,
+                "body": build_rule_based_deep_analysis(snapshot, recommendations, url_results),
+            }
 
-    return {
-        "mode": "llm",
-        "note": f"local model generated deep analysis ({DEEP_ANALYSIS_NUM_PREDICT} tokens target)",
-        "body": response,
-    }
+        note = f"local model generated deep analysis"
+        if CHAIN_OF_THOUGHT_ENABLED:
+            note += " with Chain-of-Thought"
+        note += f" ({DEEP_ANALYSIS_NUM_PREDICT} tokens target)"
+        
+        return {
+            "mode": "llm",
+            "note": note,
+            "body": response,
+        }
