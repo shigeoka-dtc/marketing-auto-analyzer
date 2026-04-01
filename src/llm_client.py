@@ -1,6 +1,9 @@
 import os
+import logging
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "phi3:mini")
@@ -72,9 +75,20 @@ def ask_llm(prompt: str, *, num_predict: int | None = None, model: str | None = 
 
 
 def ask_llm_vision(prompt: str, image_paths: list[str], *, num_predict: int | None = None) -> str:
-    """Vision モデルを使用してプロンプト + 画像を処理"""
+    """Vision モデルを使用してプロンプト + 画像を処理
+    
+    Args:
+        prompt: プロンプト文字列
+        image_paths: スクリーンショットファイルパスのリスト
+        num_predict: トークン予測数（デフォルト: OLLAMA_NUM_PREDICT）
+    
+    Returns:
+        Vision LLM の応答文字列、またはエラーメッセージ
+    """
     if not VISION_ANALYSIS_ENABLED or not OLLAMA_ENABLED:
-        return "[Vision LLM skipped] VISION_ANALYSIS_ENABLED=false or OLLAMA_ENABLED=false"
+        msg = "[Vision LLM skipped] VISION_ANALYSIS_ENABLED=false or OLLAMA_ENABLED=false"
+        logger.debug(msg)
+        return msg
     
     try:
         # 画像を base64 エンコード
@@ -82,13 +96,19 @@ def ask_llm_vision(prompt: str, image_paths: list[str], *, num_predict: int | No
         images_data = []
         for img_path in image_paths:
             if not os.path.exists(img_path):
+                logger.warning(f"Image file not found: {img_path}")
                 continue
             with open(img_path, "rb") as f:
                 img_b64 = base64.b64encode(f.read()).decode("utf-8")
                 images_data.append(img_b64)
+                logger.debug(f"Encoded image: {img_path} ({len(img_b64)} bytes base64)")
         
         if not images_data:
-            return "[Vision LLM unavailable] no valid images"
+            msg = "[Vision LLM unavailable] no valid images"
+            logger.warning(msg)
+            return msg
+        
+        logger.info(f"Calling Vision LLM: model={OLLAMA_VISION_MODEL}, images={len(images_data)}")
         
         response = requests.post(
             f"{OLLAMA_URL}/api/generate",
@@ -99,12 +119,30 @@ def ask_llm_vision(prompt: str, image_paths: list[str], *, num_predict: int | No
                 "images": images_data,
                 "options": _build_options(num_predict),
             },
-            timeout=(5, VISION_ANALYSIS_TIMEOUT),
+            timeout=(10, VISION_ANALYSIS_TIMEOUT),  # (connect, read) timeouts
         )
         response.raise_for_status()
-        text = response.json().get("response", "").strip()
+        
+        result = response.json()
+        text = result.get("response", "").strip()
+        
         if not text:
-            return "[Vision LLM unavailable] empty response"
+            msg = "[Vision LLM unavailable] empty response"
+            logger.warning(msg)
+            return msg
+        
+        logger.info(f"Vision analysis complete: {len(text)} chars")
         return text
+        
+    except requests.exceptions.Timeout as e:
+        msg = f"[Vision LLM timeout] {str(e)}"
+        logger.error(msg)
+        return msg
+    except requests.exceptions.ConnectionError as e:
+        msg = f"[Vision LLM connection error] {str(e)}"
+        logger.error(msg)
+        return msg
     except Exception as exc:
-        return f"[Vision LLM unavailable] {exc}"
+        msg = f"[Vision LLM unavailable] {type(exc).__name__}: {str(exc)}"
+        logger.error(msg, exc_info=True)
+        return msg

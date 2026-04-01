@@ -41,47 +41,6 @@ services:
       - db
     command: /bin/bash /app/run_worker.sh
 
-  dashboard:
-    build: .
-    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-        reservations:
-          memory: 1.5G
-    volumes:
-      - ./data:/app/data
-      - ./db:/app/db
-      - ./reports:/app/reports
-      - ./.streamlit:/app/.streamlit
-    environment:
-      STREAMLIT_CONFIG_DIR: /app/.streamlit
-      STATE_DB: /app/db/state.runtime.sqlite
-      TARGET_URLS_FILE: /app/data/raw/target_urls.txt
-      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-phi3:mini}
-      OLLAMA_ENABLED: ${OLLAMA_ENABLED:-false}
-      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-45}
-      OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-300}
-      DEEP_ANALYSIS_ENABLED: ${DEEP_ANALYSIS_ENABLED:-true}
-      DEEP_ANALYSIS_NUM_PREDICT: ${DEEP_ANALYSIS_NUM_PREDICT:-1200}
-      STRATEGIC_LP_ANALYSIS_ENABLED: ${STRATEGIC_LP_ANALYSIS_ENABLED:-true}
-      FORECASTING_ENABLED: ${FORECASTING_ENABLED:-true}
-      IMPACT_ANALYSIS_ENABLED: ${IMPACT_ANALYSIS_ENABLED:-true}
-      SQLITE_BUSY_TIMEOUT_MS: ${SQLITE_BUSY_TIMEOUT_MS:-30000}
-      TARGET_SITE_MAX_PAGES: ${TARGET_SITE_MAX_PAGES:-5}
-      URL_ANALYSIS_TIMEOUT: ${URL_ANALYSIS_TIMEOUT:-20}
-      ALLOWED_TARGET_HOSTS: ${ALLOWED_TARGET_HOSTS:-}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      - db
-    ports:
-      - "127.0.0.1:8501:8501"
-    command: /bin/bash /app/run_dashboard.sh
-
   db:
     image: mysql:8.0
     container_name: mysql
