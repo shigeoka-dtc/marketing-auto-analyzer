@@ -37,23 +37,4 @@ services:
       ALLOWED_TARGET_HOSTS: ${ALLOWED_TARGET_HOSTS:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    depends_on:
-      - db
     command: /bin/bash /app/run_worker.sh
-
-  db:
-    image: mysql:8.0
-    container_name: mysql
-    restart: unless-stopped
-    environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: marketing
-      MYSQL_USER: user
-      MYSQL_PASSWORD: password
-    ports:
-      - "3306:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
-
-volumes:
-  mysql_data:

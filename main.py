@@ -10,7 +10,13 @@ from src.recommend_enhanced import enhance_recommendations_with_quantified_impac
 from src.forecasting import add_forecasts_to_analysis
 from src.impact_analysis import analyze_initiative_impact
 from src.report import render_marketing_report, save_report
-from src.site_results_service import build_site_error_result, compact_site_results
+from src.site_results_service import (
+    build_site_error_result,
+    compact_site_results,
+    get_site_results_summary,
+    get_strategic_analysis_input,
+    is_actionable_site_result,
+)
 from src.state import init_state, upsert_site_analysis_result
 from src.summary_service import generate_summary
 from src.url_analyzer import analyze_site
@@ -309,7 +315,7 @@ def _render_strategic_lp_analysis_report(analysis: dict) -> str:
 
 
 
-def collect_site_results(max_site_pages: int) -> list[dict]:
+def collect_and_store_site_results(max_site_pages: int) -> list[dict]:
     results = []
     for url in load_target_urls():
         try:
@@ -327,7 +333,6 @@ def collect_site_results(max_site_pages: int) -> list[dict]:
                 )
             )
     return results
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -379,41 +384,42 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Warning: Recommendation enhancement failed: {e}")
     
-    site_results = collect_site_results(args.max_site_pages)
+    site_results = collect_and_store_site_results(args.max_site_pages)
     compact_urls = compact_site_results(site_results)
-    
-    # Generate strategic LP analysis for the most critical site
-    strategic_analyses = []
-    if not args.skip_llm:
-        try:
-            # Find the weakest site (most critical for improvement)
-            from src.site_results_service import is_actionable_site_result
-            actionable_results = [r for r in site_results if is_actionable_site_result(r)]
-            if actionable_results:
-                weakest_site = min(actionable_results, key=lambda x: x.get("score", 0))
-                weakest_url = weakest_site.get("url")
-                
-                # Get HTML and body excerpt for strategic analysis
-                # Try to find it in the site_results or re-fetch
-                for page in weakest_site.get("weak_pages", [])[:1]:
-                    page_url = page.get("url", weakest_url)
-                    try:
-                        page_analysis = analyze_site(page_url, max_pages=1)
-                        html = page_analysis.get("html", "")
-                        body_excerpt = page_analysis.get("body_excerpt", "")
-                        
-                        strategic_analysis = generate_strategic_lp_analysis_report(
-                            url=page_url,
-                            html=html,
-                            body_excerpt=body_excerpt,
-                            service_description=page.get("findings", [""])[0] if page.get("findings") else "",
-                        )
-                        strategic_analyses.append(strategic_analysis)
-                        print(f"Strategic LP analysis generated for: {page_url}")
-                    except Exception as e:
-                        print(f"Strategic LP analysis failed for {page_url}: {e}")
-        except Exception as e:
-            print(f"Warning: Strategic LP analysis skipped: {e}")
+
+# Generate strategic LP analysis for the most critical site
+strategic_analyses = []
+if not args.skip_llm:
+    try:
+        actionable_results = [r for r in site_results if is_actionable_site_result(r)]
+        if actionable_results:
+            weakest_site = min(actionable_results, key=lambda x: x.get("score", 0))
+
+            strategic_inputs = get_strategic_analysis_input(weakest_site)
+            for page in strategic_inputs[:1]:
+                page_url = page.get("url", weakest_site.get("url"))
+                try:
+                    html = page.get("html", "")
+                    body_excerpt = page.get("excerpt", "")
+                    service_description = page.get("service_description", "")
+
+                    if not service_description:
+                        findings = page.get("findings", [])
+                        if findings:
+                            service_description = findings[0]
+
+                    strategic_analysis = generate_strategic_lp_analysis_report(
+                        url=page_url,
+                        html=html,
+                        body_excerpt=body_excerpt,
+                        service_description=service_description,
+                    )
+                    strategic_analyses.append(strategic_analysis)
+                    print(f"Strategic LP analysis generated for: {page_url}")
+                except Exception as e:
+                    print(f"Strategic LP analysis failed for {page_url}: {e}")
+    except Exception as e:
+        print(f"Warning: Strategic LP analysis skipped: {e}")
     
     summary = generate_summary(
         snapshot,

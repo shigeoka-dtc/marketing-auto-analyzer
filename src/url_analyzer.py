@@ -79,7 +79,11 @@ def _normalize_url(url: str) -> str:
     )
 
 
-def analyze_url(url: str, include_internal_links: bool = False) -> dict:
+def analyze_url(
+    url: str,
+    include_internal_links: bool = False,
+    include_html: bool = False,
+) -> dict:
     """
     Analyze a URL using Playwright if available, otherwise use requests.
     Returns page analysis with screenshot_path, body_excerpt, and Vision analysis if enabled.
@@ -106,19 +110,18 @@ def analyze_url(url: str, include_internal_links: bool = False) -> dict:
         final_url, html = _fetch_html(url)
 
     page_result = _analyze_html(final_url, html, include_internal_links=include_internal_links)
-    
-    # Add body excerpt for LLM/evidence
+
     if html:
         excerpt = re.sub(
-            r"\s+", " ", 
+            r"\s+", " ",
             BeautifulSoup(html, "lxml").get_text(" ", strip=True)
         )[:300]
         page_result["body_excerpt"] = excerpt
-    
+        page_result["excerpt"] = excerpt
+
     if screenshot_path:
         page_result["screenshot_path"] = screenshot_path
-        
-        # Vision AI 分析を実行（フラグが有効な場合）
+
         if VISION_ANALYSIS_ENABLED:
             logger.info(f"Running Vision analysis for {url}")
             vision_result = analyze_url_with_vision(url, screenshot_path)
@@ -130,8 +133,10 @@ def analyze_url(url: str, include_internal_links: bool = False) -> dict:
                 page_result["vision_error"] = error_msg
                 logger.warning(f"Vision analysis failed: {error_msg}")
 
-    return page_result
+    if include_html and html:
+        page_result["html"] = html
 
+    return page_result
 
 def _is_cta(text: str, href: str) -> bool:
     """Determine if a link is a call-to-action."""
@@ -423,11 +428,13 @@ def _fetch_html(url: str) -> tuple[str, str]:
                 headers.get("Content-Type") or headers.get("content-type") or ""
             ).lower()
             if content_type and not any(
-                token in content_type 
-                for token in ["text/html", "application/xhtml+xml", "text/plain"]
+                token in content_type
+                for token in ["text/html", "application/xhtml+xml"]
             ):
                 raise ValueError(f"HTMLではないレスポンスです: {content_type}")
+
             return current_url, response.text
+
         except requests.RequestException as e:
             logger.error("Request failed for %s: %s", current_url, e)
             raise
@@ -435,7 +442,6 @@ def _fetch_html(url: str) -> tuple[str, str]:
     raise RuntimeError(
         f"リダイレクトが多すぎます: {URL_ANALYSIS_MAX_REDIRECTS} 回超"
     )
-
 
 def _build_site_summary(start_url: str, pages: list[dict], errors: list[dict]) -> dict:
     page_scores = [page["score"] for page in pages]
@@ -528,7 +534,57 @@ def analyze_site(start_url: str, max_pages: int = 5) -> dict:
         visited.add(current_url)
 
         try:
-            page_result = analyze_url(current_url, include_internal_links=True)
+            page_result = analyze_url(
+                current_url,
+                include_internal_links=True,
+                include_html=True,
+            )
+        except Exception as exc:
+            errors.append({"url": current_url, "error": str(exc)})
+            continue
+
+        final_url = page_result.get("url", current_url)
+        visited.add(final_url)
+        internal_links = page_result.pop("internal_links", [])
+        pages.append(page_result)
+
+        for internal_link in internal_links:
+            if internal_link in visited or internal_link in pending:
+                continue
+            if len(pages) + len(pending) >= page_limit * 4:
+                break
+            pending.append(internal_link)
+
+    if not pages:
+        first_error = errors[0]["error"] if errors else "ページを取得できませんでした"
+        raise RuntimeError(f"サイト分析に失敗しました: {first_error}")
+
+    return _build_site_summary(normalized_start, pages, errors)
+    normalized_start = _normalize_url(start_url)
+    if not normalized_start:
+        raise ValueError("分析対象URLは http:// または https:// で始めてください")
+    assert_safe_target_url(normalized_start)
+
+    pending = deque([normalized_start])
+    visited = set()
+    pages = []
+    errors = []
+    page_limit = max(1, int(max_pages))
+
+    while pending and len(pages) < page_limit:
+        current_url = pending.popleft()
+        if current_url in visited:
+            continue
+
+        visited.add(current_url)
+
+        try:
+            page_result = analyze_url(
+               current_url,
+               include_internal_links=True,
+               include_html=True,
+            )
+
         except Exception as exc:
             errors.append({"url": current_url, "error": str(exc)})
             continue
