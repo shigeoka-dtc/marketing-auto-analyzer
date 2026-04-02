@@ -86,3 +86,69 @@ def merge_site_results(target_urls: list[str], current_results: list[dict], stor
         if result.get("url") not in {item.get("url") for item in merged}
     )
     return merged
+
+def get_strategic_analysis_input(site_result: dict) -> list[dict]:
+    """
+    戦略LP分析に必要な入力を、初回クロール済みの site_result から取り出す。
+    weak_pages に対応する pages の内容を優先して返し、再クロールを避ける。
+    """
+    pages = site_result.get("pages", []) or []
+    weak_pages = site_result.get("weak_pages", []) or []
+
+    page_by_url = {}
+    for page in pages:
+        url = page.get("url")
+        if url:
+            page_by_url[url] = page
+
+    results = []
+    for weak_page in weak_pages:
+        url = weak_page.get("url") or site_result.get("url")
+        if not url:
+            continue
+
+        page = page_by_url.get(url, {})
+
+        service_description = ""
+        findings = weak_page.get("findings", [])
+        if findings:
+            service_description = findings[0]
+
+        if not service_description:
+            page_findings = page.get("findings", [])
+            if page_findings:
+                service_description = page_findings[0]
+
+        results.append(
+            {
+                "url": url,
+                "title": page.get("title", weak_page.get("title", "")),
+                "html": page.get("html", ""),
+                "excerpt": page.get("excerpt", page.get("body_excerpt", "")),
+                "body_excerpt": page.get("body_excerpt", page.get("excerpt", "")),
+                "service_description": service_description,
+                "findings": weak_page.get("findings", page.get("findings", [])),
+                "score": weak_page.get("score", page.get("score")),
+            }
+        )
+
+    if results:
+        return results
+
+    fallback_url = site_result.get("url")
+    if fallback_url and pages:
+        page = pages[0]
+        return [
+            {
+                "url": page.get("url", fallback_url),
+                "title": page.get("title", ""),
+                "html": page.get("html", ""),
+                "excerpt": page.get("excerpt", page.get("body_excerpt", "")),
+                "body_excerpt": page.get("body_excerpt", page.get("excerpt", "")),
+                "service_description": "",
+                "findings": page.get("findings", []),
+                "score": page.get("score"),
+            }
+        ]
+
+    return []
