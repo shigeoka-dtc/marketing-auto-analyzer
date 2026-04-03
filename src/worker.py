@@ -301,10 +301,12 @@ def run_cycle(
         llm_summary=summary,
         deep_analysis=deep_analysis,
     )
+
     path = save_report("daily_analysis", report)
     logger.info("Cycle completed successfully: %s", path)
-    
+
     # ===== RAG に分析結果を保存 =====
+
     if RAG_ENABLED:
         try:
             collection = rag_utils.get_rag_collection()
@@ -403,12 +405,32 @@ def run_cycle(
     return path
 
 
+def parse_duration(duration_str: str) -> int:
+    """Parse duration string like '1h', '30m', '3600s' into seconds"""
+    duration_str = duration_str.lower().strip()
+    
+    if duration_str.endswith('h'):
+        return int(duration_str[:-1]) * 3600
+    elif duration_str.endswith('m'):
+        return int(duration_str[:-1]) * 60
+    elif duration_str.endswith('s'):
+        return int(duration_str[:-1])
+    else:
+        try:
+            return int(duration_str)
+        except ValueError:
+            raise ValueError(f"Invalid duration format: {duration_str}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--skip-llm", action="store_true")
     parser.add_argument("--force-reload", action="store_true")
     parser.add_argument("--max-site-pages", type=int, default=TARGET_SITE_MAX_PAGES)
+    parser.add_argument("--duration", type=str, default=None, help="Run for specified duration (e.g., '1h', '30m', '3600s')")
+    parser.add_argument("--final-report", type=str, default=None, help="Save the final report to this filename (in reports/)")
+    parser.add_argument("--no-overwrite", action="store_true", help="Avoid overwriting final-report; save per-iteration files instead")
     args = parser.parse_args()
 
     setup_logging()
@@ -421,26 +443,106 @@ def main():
         )
         return
 
-    while True:
+    # If duration is specified, run for that duration
+    if args.duration:
         try:
-            run_cycle(
-                skip_llm=args.skip_llm,
-                force_reload=args.force_reload,
-                max_site_pages=args.max_site_pages,
-            )
-        except Exception:
-            tb = traceback.format_exc()
-            logger.exception("Worker cycle failed")
-            path = save_report(
-                "worker_error",
-                f"# Worker Error\n\n"
-                f"Generated: {datetime.now(UTC).isoformat()}\n\n"
-                f"```text\n{tb}\n```",
-            )
-            logger.info("Saved worker error report: %s", path)
+            from pathlib import Path
+            from src.report import refine_report_with_ai
+            import shutil
 
-        logger.info("Sleeping %s seconds", SLEEP_SECONDS)
-        time.sleep(SLEEP_SECONDS)
+            duration_seconds = parse_duration(args.duration)
+            start_time = time.time()
+            end_time = start_time + duration_seconds
+            iteration = 0
+            final_report_path: str | None = None
+
+            while time.time() < end_time:
+                iteration += 1
+                elapsed = time.time() - start_time
+                remaining = end_time - time.time()
+
+                logger.info(f"🔄 Iteration {iteration} - Elapsed: {elapsed:,.0f}s / Remaining: {remaining:,.0f}s")
+
+                try:
+                    cycle_report_path = run_cycle(
+                        skip_llm=args.skip_llm,
+                        force_reload=args.force_reload,
+                        max_site_pages=args.max_site_pages,
+                    )
+
+                    if args.final_report:
+                        target_name = args.final_report
+                        target_path = Path("reports") / target_name
+                        if target_path.suffix.lower() != ".md":
+                            target_path = target_path.with_suffix(".md")
+                        Path("reports").mkdir(parents=True, exist_ok=True)
+
+                        if args.no_overwrite:
+                            safe_name = target_path.stem
+                            iteration_path = Path("reports") / f"{safe_name}_iter{iteration:03d}.md"
+                            shutil.copy2(cycle_report_path, iteration_path)
+                            logger.info("Saved iteration report (no-overwrite mode): %s", iteration_path)
+                            final_report_path = str(iteration_path)
+                        else:
+                            if final_report_path is None:
+                                shutil.copy2(cycle_report_path, target_path)
+                                final_report_path = str(target_path)
+                            else:
+                                final_report_path = refine_report_with_ai(final_report_path, cycle_report_path, target_path.name)
+                            logger.info("Final AI-refined report updated: %s", final_report_path)
+                    else:
+                        # final_report未指定なら、最新結果を最終報告扱いにする
+                        final_report_path = cycle_report_path
+
+                except Exception:
+                    tb = traceback.format_exc()
+                    logger.exception("Worker cycle failed")
+                    path = save_report(
+                        "worker_error",
+                        f"# Worker Error\n\n"
+                        f"Generated: {datetime.now(UTC).isoformat()}\n\n"
+                        f"```text\n{tb}\n```",
+                    )
+                    logger.info("Saved worker error report: %s", path)
+
+                # Check if time limit exceeded
+                if time.time() >= end_time:
+                    break
+
+                # Small sleep before next iteration
+                time.sleep(2)
+
+            total_elapsed = time.time() - start_time
+            logger.info(f"✨ Analysis complete! Total time: {total_elapsed:,.0f}s, Iterations: {iteration}")
+            if final_report_path:
+                logger.info("📄 Final report finished: %s", final_report_path)
+
+        except ValueError as e:
+            logger.error(f"Invalid duration format: {e}")
+            return
+
+    # Regular infinite loop (default behavior)
+    else:
+        while True:
+            try:
+                run_cycle(
+                    skip_llm=args.skip_llm,
+                    force_reload=args.force_reload,
+                    max_site_pages=args.max_site_pages,
+                )
+            except Exception:
+                tb = traceback.format_exc()
+                logger.exception("Worker cycle failed")
+                path = save_report(
+                    "worker_error",
+                    f"# Worker Error\n\n"
+                    f"Generated: {datetime.now(UTC).isoformat()}\n\n"
+                    f"```text\n{tb}\n```",
+                )
+                logger.info("Saved worker error report: %s", path)
+
+            logger.info("Sleeping %s seconds", SLEEP_SECONDS)
+            time.sleep(SLEEP_SECONDS)
 
 
 if __name__ == "__main__":

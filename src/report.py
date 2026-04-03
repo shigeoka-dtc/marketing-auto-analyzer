@@ -12,12 +12,58 @@ from src.site_results_service import is_actionable_site_result, site_result_stat
 logger = logging.getLogger(__name__)
 
 
-def save_report(title: str, body: str):
+def save_report(title: str, body: str, custom_filename: str | None = None):
     Path("reports").mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-    path = Path("reports") / f"{ts}_{title}.md"
+
+    if custom_filename:
+        path = Path("reports") / custom_filename
+        if path.suffix.lower() != ".md":
+            path = path.with_suffix(".md")
+    else:
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        path = Path("reports") / f"{ts}_{title}.md"
+
     path.write_text(body, encoding="utf-8")
     return str(path)
+
+
+def refine_report_with_ai(existing_report_path: str, new_report_path: str, output_filename: str) -> str:
+    """LLM で既存＆新規レポートを統合・改善して出力
+
+    既存レポートがある場合はその内容を保持しつつ、新しい証拠や提言を統合して
+    1つのレポートを生成します。LLM が無効の場合は new_report をそのまま書き出します。
+    """
+    from src.llm_client import ask_llm, OLLAMA_ENABLED
+
+    existing_text = Path(existing_report_path).read_text(encoding="utf-8")
+    new_text = Path(new_report_path).read_text(encoding="utf-8")
+
+    if not OLLAMA_ENABLED:
+        merged_text = "\n".join([existing_text, "\n\n", new_text])
+    else:
+        prompt = f"""
+あなたはマーケティングアナリストです。以下既存レポートと新レポートを比較し、内容を統合してより実践的かつ論理的に改善したマークダウンレポートを1つ作成してください。
+
+=== 既存レポート ===
+{existing_text}
+
+=== 新レポート ===
+{new_text}
+
+出力はマークダウンの完全なレポート本文のみとし、重複は避けてわかりやすくまとめてください。
+"""
+        response = ask_llm(prompt, num_predict=1200)
+        if response.startswith("[LLM unavailable]"):
+            merged_text = "\n".join([existing_text, "\n\n", new_text])
+        else:
+            merged_text = response
+
+    output_path = Path("reports") / output_filename
+    if Path(output_path).suffix.lower() != ".md":
+        output_path = output_path.with_suffix(".md")
+
+    output_path.write_text(merged_text, encoding="utf-8")
+    return str(output_path)
 
 
 def save_report_json(title: str, data: dict, latest: bool = False):
