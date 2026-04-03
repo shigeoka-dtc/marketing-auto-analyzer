@@ -381,11 +381,188 @@ def detect_anomalies(
     return sorted(alerts, key=lambda x: (severity_rank.get(x["severity"], 99), x["scope"]))
 
 
+def _rolling_trends(df: pd.DataFrame, window_short: int = 7, window_long: int = 28):
+    daily = daily_summary(df)
+    if daily.empty:
+        return {}
+
+    data = daily.set_index("date")["revenue"]
+    short_ma = data.rolling(window=window_short, min_periods=1).mean()
+    long_ma = data.rolling(window=window_long, min_periods=1).mean()
+
+    momentum = (short_ma - long_ma) / long_ma.replace(0, float("nan"))
+    volatility = data.pct_change().rolling(window=window_short, min_periods=1).std().fillna(0)
+
+    latest_date = daily.iloc[-1]["date"]
+
+    return {
+        "latest_date": _as_date_str(latest_date),
+        "revenue_short_ma": float(short_ma.iloc[-1]),
+        "revenue_long_ma": float(long_ma.iloc[-1]),
+        "revenue_momentum": float(momentum.iloc[-1]) if not pd.isna(momentum.iloc[-1]) else None,
+        "revenue_volatility": float(volatility.iloc[-1]),
+    }
+
+
+def _channel_correlations(df: pd.DataFrame):
+    if df.empty:
+        return {"strong_correlations": [], "correlation_matrix": {}}
+
+    pivot = df.pivot_table(
+        index="date",
+        columns="channel",
+        values="revenue",
+        aggfunc="sum",
+        fill_value=0
+    )
+
+    corr_matrix = pivot.corr()
+    strong_correlations = []
+
+    for i in range(len(corr_matrix.columns)):
+        for j in range(i + 1, len(corr_matrix.columns)):
+            channel_a = corr_matrix.columns[i]
+            channel_b = corr_matrix.columns[j]
+            correlation = corr_matrix.iloc[i, j]
+
+            if abs(correlation) >= 0.7:
+                strong_correlations.append({
+                    "channel_a": channel_a,
+                    "channel_b": channel_b,
+                    "correlation": float(correlation),
+                    "strength": "strong_positive" if correlation > 0 else "strong_negative"
+                })
+
+    return {
+        "strong_correlations": strong_correlations,
+        "correlation_matrix": corr_matrix.to_dict()
+    }
+
+
+def _predictive_insights(df: pd.DataFrame):
+    daily = daily_summary(df)
+    if len(daily) < 7:
+        return {"trend_direction": "insufficient_data", "confidence": 0.0, "forecast": {}}
+
+    from sklearn.linear_model import LinearRegression
+    import numpy as np
+
+    data = daily.copy()
+    data["day_index"] = range(len(data))
+
+    X = data[["day_index"]].values
+    y = data["revenue"].values
+
+    model = LinearRegression()
+    model.fit(X, y)
+
+    slope = model.coef_[0]
+    intercept = model.intercept_
+
+    trend_direction = "increasing" if slope > 0 else "decreasing"
+    confidence = max(0.0, min(1.0, abs(slope) / (abs(slope) + data["revenue"].std())))
+
+    next_day_index = len(data)
+    forecast_revenue = float(model.predict([[next_day_index]])[0])
+
+    return {
+        "trend_direction": trend_direction,
+        "confidence": float(confidence),
+        "forecast": {
+            "next_day_revenue": forecast_revenue,
+            "slope": float(slope),
+            "intercept": float(intercept)
+        }
+    }
+
+
+def _anomaly_detection(df: pd.DataFrame):
+    daily = daily_summary(df)
+    if len(daily) < 7:
+        return {"anomalies": [], "z_score_threshold": 2.0}
+
+    import numpy as np
+
+    data = daily["revenue"].values
+    mean = np.mean(data)
+    std = np.std(data)
+
+    if std == 0:
+        return {"anomalies": [], "z_score_threshold": 2.0}
+
+    z_scores = [(value - mean) / std for value in data]
+    anomalies = []
+
+    for i, (date, z_score) in enumerate(zip(daily["date"], z_scores)):
+        if abs(z_score) > 2.0:
+            anomalies.append({
+                "date": _as_date_str(date),
+                "revenue": float(data[i]),
+                "z_score": float(z_score),
+                "type": "high" if z_score > 0 else "low",
+                "severity": "extreme" if abs(z_score) > 3.0 else "moderate"
+            })
+
+    return {
+        "anomalies": anomalies,
+        "z_score_threshold": 2.0,
+        "mean_revenue": float(mean),
+        "std_revenue": float(std)
+    }
+
+
+def _segmentation_analysis(df: pd.DataFrame):
+    if df.empty:
+        return {"segments": [], "insights": []}
+
+    channel_summary_df = channel_summary(df)
+    total_revenue = float(channel_summary_df["revenue"].sum())
+
+    segments = []
+    insights = []
+
+    for _, row in channel_summary_df.iterrows():
+        revenue_share = float(row["revenue"]) / total_revenue if total_revenue > 0 else 0
+        roas = float(row["roas"])
+
+        segment_type = "high_performer" if roas > 3.0 and revenue_share > 0.3 else \
+                      "consistent" if roas > 1.5 else \
+                      "under_performer"
+
+        segments.append({
+            "channel": row["channel"],
+            "segment_type": segment_type,
+            "revenue_share": revenue_share,
+            "roas": roas,
+            "cvr": float(row["cvr"]),
+            "cpa": float(row["cpa"])
+        })
+
+    high_performers = [s for s in segments if s["segment_type"] == "high_performer"]
+    under_performers = [s for s in segments if s["segment_type"] == "under_performer"]
+
+    if high_performers:
+        insights.append(f"高パフォーマンスチャネル: {', '.join([s['channel'] for s in high_performers])} - 予算増強検討")
+
+    if under_performers:
+        insights.append(f"改善対象チャネル: {', '.join([s['channel'] for s in under_performers])} - 最適化優先")
+
+    return {
+        "segments": segments,
+        "insights": insights
+    }
+
+
 def build_analysis_snapshot(df: pd.DataFrame):
     latest = latest_snapshot(df)
     channels = channel_summary(df)
     diagnostics = channel_diagnostics(df)
     alerts = detect_anomalies(df, latest=latest, diagnostics=diagnostics)
+    advanced = _rolling_trends(df)
+    correlations = _channel_correlations(df)
+    predictions = _predictive_insights(df)
+    anomalies = _anomaly_detection(df)
+    segmentation = _segmentation_analysis(df)
 
     return {
         "kpis": total_kpis(df),
@@ -394,4 +571,11 @@ def build_analysis_snapshot(df: pd.DataFrame):
         "channels": channels,
         "diagnostics": diagnostics,
         "alerts": alerts,
+        "advanced": {
+            **advanced,
+            "channel_correlations": correlations,
+            "predictions": predictions,
+            "anomalies": anomalies,
+            "segmentation": segmentation,
+        },
     }

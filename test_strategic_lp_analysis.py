@@ -116,6 +116,19 @@ except Exception as e:
     traceback.print_exc()
 
 
+print("Test 5: main.run_analysis dry run")
+try:
+    from main import run_analysis
+    result = run_analysis(dry_run=True, skip_site_analysis=True, skip_llm=True)
+    print(f"  - Results keys: {list(result.keys())}")
+    assert result["site_results"] == []
+    assert result["report_path"] is None
+    print("✓ main.run_analysis dry run test passed\n")
+except Exception as e:
+    print(f"✗ main.run_analysis dry run failed: {e}\n")
+    import traceback
+    traceback.print_exc()
+
 print("=== All module tests completed ===")
 print("\nNote: Full end-to-end testing requires LLM integration and actual HTML crawling.")
 print("The basic module structure and integration points are verified.")
