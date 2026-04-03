@@ -141,6 +141,13 @@ class AnalysisFlowTests(unittest.TestCase):
         )
 
         self.assertEqual(snapshot["latest"]["latest_date"], "2026-03-22")
+        self.assertIn("advanced", snapshot)
+        self.assertIsInstance(snapshot["advanced"], dict)
+        self.assertIn("revenue_momentum", snapshot["advanced"])
+        self.assertIn("channel_correlations", snapshot["advanced"])
+        self.assertIn("predictions", snapshot["advanced"])
+        self.assertIn("anomalies", snapshot["advanced"])
+        self.assertIn("segmentation", snapshot["advanced"])
         self.assertFalse(snapshot["alerts"])
         self.assertEqual(recommendations[0]["channel"], "meta")
         self.assertEqual(recommendations[0]["priority"], "P2")

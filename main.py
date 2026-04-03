@@ -1,6 +1,8 @@
 import argparse
-import os
 import json
+import logging
+import os
+from pathlib import Path
 
 from src.analysis import build_analysis_snapshot, read_mart
 from src.deep_analysis import generate_deep_analysis
@@ -13,7 +15,6 @@ from src.report import render_marketing_report, save_report
 from src.site_results_service import (
     build_site_error_result,
     compact_site_results,
-    get_site_results_summary,
     get_strategic_analysis_input,
     is_actionable_site_result,
 )
@@ -314,6 +315,70 @@ def _render_strategic_lp_analysis_report(analysis: dict) -> str:
     return "\n".join(lines)
 
 
+def configure_logger():
+    logger = logging.getLogger("marketing_auto_analyzer")
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    if not logger.handlers:
+        logger.addHandler(handler)
+    return logger
+
+
+def filter_site_results_by_score(site_results: list[dict], min_score: int | None):
+    if min_score is None:
+        return site_results
+    return [r for r in site_results if (r.get("score") is not None and r.get("score") >= min_score)]
+
+
+def generate_strategic_lp_analyses(site_results: list[dict], skip_llm: bool):
+    from src.site_results_service import get_strategic_analysis_input, is_actionable_site_result
+    from src.strategic_lp_analysis import generate_strategic_lp_analysis_report
+
+    strategic_analyses = []
+    if skip_llm:
+        return strategic_analyses
+
+    actionable_results = [r for r in site_results if is_actionable_site_result(r)]
+    if not actionable_results:
+        return strategic_analyses
+
+    weakest_site = min(actionable_results, key=lambda x: x.get("score", 0))
+    strategic_inputs = get_strategic_analysis_input(weakest_site)
+
+    for page in strategic_inputs[:1]:
+        page_url = page.get("url", weakest_site.get("url"))
+        try:
+            html = page.get("html", "")
+            body_excerpt = page.get("excerpt", "")
+            service_description = page.get("service_description", "")
+            if not service_description:
+                findings = page.get("findings", [])
+                service_description = findings[0] if findings else ""
+
+            strategic_analysis = generate_strategic_lp_analysis_report(
+                url=page_url,
+                html=html,
+                body_excerpt=body_excerpt,
+                service_description=service_description,
+            )
+            strategic_analyses.append(strategic_analysis)
+        except Exception as e:
+            logging.getLogger("marketing_auto_analyzer").warning(
+                f"Strategic LP analysis failed for {page_url}: {e}"
+            )
+
+    return strategic_analyses
+
+
+def save_json_summary(filename: str, data: dict):
+    from src.report import save_report_json
+    try:
+        return save_report_json(filename, data, latest=True)
+    except Exception as exc:
+        logging.getLogger("marketing_auto_analyzer").warning(f"Could not save JSON summary: {exc}")
+        return ""
+
 
 def collect_and_store_site_results(max_site_pages: int) -> list[dict]:
     results = []
@@ -334,18 +399,22 @@ def collect_and_store_site_results(max_site_pages: int) -> list[dict]:
             )
     return results
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--force-reload", action="store_true")
-    parser.add_argument("--max-site-pages", type=int, default=TARGET_SITE_MAX_PAGES)
-    parser.add_argument("--skip-llm", action="store_true")
-    parser.add_argument("--enable-forecasting", action="store_true", help="Enable predictive analytics and forecasting")
-    parser.add_argument("--enable-impact-analysis", action="store_true", help="Enable initiative impact analysis")
-    parser.add_argument("--initiatives", type=str, default="", help="JSON string with initiatives to analyze")
-    args = parser.parse_args()
+def run_analysis(
+    force_reload: bool = False,
+    max_site_pages: int = TARGET_SITE_MAX_PAGES,
+    skip_llm: bool = False,
+    skip_site_analysis: bool = False,
+    enable_forecasting: bool = False,
+    enable_impact_analysis: bool = False,
+    initiatives: list[dict] | None = None,
+    dry_run: bool = False,
+    min_site_score: int | None = None,
+    save_json: bool = False,
+):
+    logger = configure_logger()
 
     init_state()
-    load_result = load_csv_to_duckdb(force=args.force_reload)
+    load_result = load_csv_to_duckdb(force=force_reload)
     df = read_mart()
     snapshot = build_analysis_snapshot(df)
     recommendations = generate_recommendations(
@@ -353,26 +422,24 @@ if __name__ == "__main__":
         snapshot["diagnostics"],
         snapshot["alerts"],
     )
-    
-    # Add forecasting if enabled
+
     impact_analysis_result = None
-    if args.enable_forecasting:
+    if enable_forecasting:
         try:
             snapshot = add_forecasts_to_analysis(snapshot, df)
+            logger.info("Forecasting completed successfully")
         except Exception as e:
-            print(f"Warning: Forecasting failed: {e}")
-    
-    # Add impact analysis if enabled
-    if args.enable_impact_analysis and args.initiatives:
+            logger.warning(f"Forecasting failed: {e}")
+
+    if enable_impact_analysis and initiatives:
         try:
-            initiatives = json.loads(args.initiatives)
             impact_analysis_result = analyze_initiative_impact(df, initiatives)
-            print(f"Initiative Impact Analysis: {len(impact_analysis_result.get('impact_results', []))} initiatives analyzed")
+            count = len(impact_analysis_result.get("impact_results", []))
+            logger.info(f"Initiative Impact Analysis: {count} initiatives analyzed")
         except Exception as e:
-            print(f"Warning: Impact analysis failed: {e}")
-    
-    # Enhance recommendations with quantified impact
-    if args.enable_forecasting or args.enable_impact_analysis:
+            logger.warning(f"Impact analysis failed: {e}")
+
+    if enable_forecasting or enable_impact_analysis:
         try:
             recommendations = enhance_recommendations_with_quantified_impact(
                 recommendations,
@@ -380,79 +447,127 @@ if __name__ == "__main__":
                 channels_df=snapshot.get("channels"),
                 impact_analysis=impact_analysis_result,
             )
-            print(f"Enhanced {len(recommendations)} recommendations with quantified impact")
+            logger.info(f"Enhanced {len(recommendations)} recommendations with quantified impact")
         except Exception as e:
-            print(f"Warning: Recommendation enhancement failed: {e}")
-    
-    site_results = collect_and_store_site_results(args.max_site_pages)
-    compact_urls = compact_site_results(site_results)
+            logger.warning(f"Recommendation enhancement failed: {e}")
 
-# Generate strategic LP analysis for the most critical site
-strategic_analyses = []
-if not args.skip_llm:
-    try:
-        actionable_results = [r for r in site_results if is_actionable_site_result(r)]
-        if actionable_results:
-            weakest_site = min(actionable_results, key=lambda x: x.get("score", 0))
+    site_results = []
+    compact_urls: list[dict] = []
+    strategic_analyses: list[str] = []
 
-            strategic_inputs = get_strategic_analysis_input(weakest_site)
-            for page in strategic_inputs[:1]:
-                page_url = page.get("url", weakest_site.get("url"))
-                try:
-                    html = page.get("html", "")
-                    body_excerpt = page.get("excerpt", "")
-                    service_description = page.get("service_description", "")
+    if not dry_run and not skip_site_analysis:
+        site_results = collect_and_store_site_results(max_site_pages)
+        if min_site_score is not None:
+            site_results = filter_site_results_by_score(site_results, min_score=min_site_score)
+        compact_urls = compact_site_results(site_results)
+        strategic_analyses = generate_strategic_lp_analyses(site_results, skip_llm)
+    else:
+        logger.info("Site analysis skipped: dry_run=%s skip_site_analysis=%s", dry_run, skip_site_analysis)
 
-                    if not service_description:
-                        findings = page.get("findings", [])
-                        if findings:
-                            service_description = findings[0]
+    summary = None
+    deep_analysis = None
+    report_path = None
 
-                    strategic_analysis = generate_strategic_lp_analysis_report(
-                        url=page_url,
-                        html=html,
-                        body_excerpt=body_excerpt,
-                        service_description=service_description,
-                    )
-                    strategic_analyses.append(strategic_analysis)
-                    print(f"Strategic LP analysis generated for: {page_url}")
-                except Exception as e:
-                    print(f"Strategic LP analysis failed for {page_url}: {e}")
-    except Exception as e:
-        print(f"Warning: Strategic LP analysis skipped: {e}")
-    
-    summary = generate_summary(
-        snapshot,
-        recommendations,
-        compact_urls,
-        site_results,
+    if not skip_llm:
+        summary = generate_summary(
+            snapshot,
+            recommendations,
+            compact_urls,
+            site_results,
+            skip_llm=skip_llm,
+        )
+        deep_analysis = generate_deep_analysis(
+            snapshot,
+            recommendations,
+            site_results,
+            skip_llm=skip_llm,
+        )
+
+        if not dry_run:
+            report = render_marketing_report(
+                snapshot=snapshot,
+                recommendations=recommendations,
+                url_results=site_results,
+                llm_summary=summary,
+                deep_analysis=deep_analysis,
+            )
+            report_path = save_report("manual_analysis", report)
+            logger.info("Report saved: %s", report_path)
+        else:
+            logger.info("Dry run: report generation skipped")
+
+    if save_json:
+        json_path = save_json_summary(
+            "manual_analysis",
+            {
+                "snapshot": snapshot,
+                "recommendations": recommendations,
+                "site_results": site_results,
+                "strategic_analyses": strategic_analyses,
+                "summary": summary,
+                "deep_analysis": deep_analysis,
+                "load_result": load_result,
+            },
+        )
+        logger.info("JSON summary saved: %s", json_path)
+
+    return {
+        "load_result": load_result,
+        "snapshot": snapshot,
+        "recommendations": recommendations,
+        "site_results": site_results,
+        "compact_urls": compact_urls,
+        "summary": summary,
+        "deep_analysis": deep_analysis,
+        "report_path": report_path,
+        "strategic_analyses": strategic_analyses,
+    }
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--force-reload", action="store_true")
+    parser.add_argument("--max-site-pages", type=int, default=TARGET_SITE_MAX_PAGES)
+    parser.add_argument("--skip-llm", action="store_true")
+    parser.add_argument("--skip-site-analysis", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="Run pipeline without saving reports or invoking crawling/LLM outputs")
+    parser.add_argument("--enable-forecasting", action="store_true", help="Enable predictive analytics and forecasting")
+    parser.add_argument("--enable-impact-analysis", action="store_true", help="Enable initiative impact analysis")
+    parser.add_argument("--initiatives", type=str, default="", help="JSON string with initiatives to analyze")
+    parser.add_argument("--min-site-score", type=int, default=None, help="最低評価サイトスコアを指定して対象を絞る（0-100）")
+    parser.add_argument("--save-json", action="store_true", help="Save a JSON summary alongside markdown output")
+    args = parser.parse_args()
+
+    initiatives_json = None
+    if args.enable_impact_analysis and args.initiatives:
+        try:
+            initiatives_json = json.loads(args.initiatives)
+        except json.JSONDecodeError as e:
+            raise SystemExit(f"Invalid --initiatives JSON: {e}")
+
+    result = run_analysis(
+        force_reload=args.force_reload,
+        max_site_pages=args.max_site_pages,
         skip_llm=args.skip_llm,
-    )
-    deep_analysis = generate_deep_analysis(
-        snapshot,
-        recommendations,
-        site_results,
-        skip_llm=args.skip_llm,
+        skip_site_analysis=args.skip_site_analysis,
+        enable_forecasting=args.enable_forecasting,
+        enable_impact_analysis=args.enable_impact_analysis,
+        initiatives=initiatives_json,
+        dry_run=args.dry_run,
+        min_site_score=args.min_site_score,
+        save_json=args.save_json,
     )
 
-    report = render_marketing_report(
-        snapshot=snapshot,
-        recommendations=recommendations,
-        url_results=site_results,
-        llm_summary=summary,
-        deep_analysis=deep_analysis,
-    )
-    path = save_report("manual_analysis", report)
-    print(f"CSV同期: {load_result['status']}")
-    print(f"対象サイト数: {len(site_results)}")
-    print(f"分析レポートを生成しました: {path}")
-    
-    # Save strategic LP analysis reports if generated
-    if strategic_analyses:
-        for idx, analysis in enumerate(strategic_analyses):
+    print(f"CSV同期: {result['load_result'].get('status')}")
+    print(f"対象サイト数: {len(result['site_results'])}")
+    if result["report_path"]:
+        print(f"分析レポートを生成しました: {result['report_path']}")
+    if result["strategic_analyses"]:
+        for idx, analysis_markdown in enumerate(result["strategic_analyses"]):
             try:
-                strategic_report = _render_strategic_lp_analysis_report(analysis)
+                strategic_report = _render_strategic_lp_analysis_report(analysis_markdown)
                 strategic_path = save_report(f"lp_strategy_analysis_{idx+1}", strategic_report)
                 print(f"戦略的LP分析レポート生成: {strategic_path}")
             except Exception as e:
                 print(f"Strategic report rendering failed: {e}")
+
