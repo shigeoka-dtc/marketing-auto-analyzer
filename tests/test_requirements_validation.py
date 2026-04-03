@@ -25,13 +25,24 @@ class TestRequirementsIntegrity(unittest.TestCase):
         req_file = Path(__file__).parent.parent / "requirements.txt"
         contents = req_file.read_text()
         
-        required = ["playwright", "chromadb", "duckdb", "pandas", "streamlit"]
+        required = ["playwright", "chromadb", "duckdb", "pandas"]
         for pkg in required:
             self.assertIn(
                 pkg.lower(), 
                 contents.lower(), 
                 f"{pkg} not found in requirements.txt"
             )
+    
+    def test_no_unused_streamlit(self):
+        """Verify streamlit is not in requirements (dashboard removed)"""
+        req_file = Path(__file__).parent.parent / "requirements.txt"
+        contents = req_file.read_text()
+        
+        self.assertNotIn(
+            "streamlit",
+            contents.lower(),
+            "streamlit should not be in requirements.txt (dashboard removed)"
+        )
 
     def test_no_unused_mysql_in_code(self):
         """Verify MySQL is not used in application code"""
@@ -101,13 +112,15 @@ class TestReadmeAccuracy(unittest.TestCase):
         main_py = Path(__file__).parent.parent / "main.py"
         main_contents = main_py.read_text()
         
-        # These should be documented and implemented
+        # These should be documented and implemented (updated from old args)
         valid_args = [
             "--force-reload",
             "--max-site-pages",
             "--skip-llm",
-            "--enable-forecasting",
-            "--enable-impact-analysis",
+            "--skip-site-analysis",
+            "--dry-run",
+            "--save-json",
+            "--strategic-lp-count",
         ]
         
         for arg in valid_args:
