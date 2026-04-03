@@ -6,11 +6,11 @@
 
 - `data/raw/marketing.csv` を自動で DuckDB に取り込み
 - 日次KPI、チャネル別診断、異常検知、改善提案を自動生成
+- 高度な分析機能：ローリングトレンド、チャネル相関、予測分析、異常検知、セグメンテーション
 - `data/raw/target_urls.txt` に書いた対象サイトを worker が自動巡回
 - 1サイトあたり複数ページを分析し、サイト全体の改善案を出力
 - 各サイトの最新分析結果を蓄積し、レポートでは対象サイト全体を統合表示
-- Markdown レポートを `reports/` に保存
-- Streamlit ダッシュボードから対象サイトの編集と即時診断が可能
+- Markdown レポート + JSON/CSV で `reports/` に保存（バッチ処理、最大3時間までOK）
 - 深掘り分析ではチャネル別訴求案、ページ別コピー案、実装チケット分解まで自動生成
 - 無料モードでは API なしで動作
 - private / loopback / link-local 宛てのURLは既定で拒否
@@ -115,11 +115,15 @@ python main.py --enable-forecasting --enable-impact-analysis
 - ✅ チャネル別訴求案
 - ✅ 実装チケット自動分解
 
-**パターン C: ダッシュボード＋自動定期分析**
+**パターン C: 自動定期分析（バッチ処理モード）**
 ```bash
-./start.sh
+# 1回の分析実行（最大3時間まで処理時間OK）
+python main.py --enable-forecasting --enable-impact-analysis
+
+# または 定期実行
+./run_worker.sh
 ```
-→ Ollama がセットアップされていれば自動的に常時利用
+→ Ollama がセットアップされていれば全LLM機能が利用可能
 → `WORKER_INTERVAL_SECONDS=300` の間隔で自動再分析
 
 📖 **詳細ドキュメント**:
@@ -151,13 +155,16 @@ echo "OLLAMA_ENABLED=false" >> .env
 
 ---
 
-## Docker 起動中の自動分析
+## バッチ処理モード（推奨）
+
+すべての分析結果は Markdown + JSON + CSV レポートで `reports/` に定期おきに自動保存されます。
 
 - `worker` が起動中、`marketing.csv` と対象サイトを定期的に再分析します
-- `dashboard` は画面表示に専念し、重い分析実行は `worker` が担当します
-- **Ollama がセットアップされていれば** 全AI機能が自動的に有効
+- 重い分析処理（LLM、統計分析）もすべてバッチ処理なため安定
+- **Ollama がセットアップされていれば** 全AI機能が自動的に有効  
 - 継続間隔はデフォルトで `600` 秒（`.env` の `WORKER_INTERVAL_SECONDS` で調整可）
-- レポートには `Evidence Base` と `90-Day Transformation Program` が入り、事実と改善提案の境界を見やすくしています
+- レポートには `Evidence Base` と `Advanced Analytics` が入り、事実と改善提案の境界を見やすくしています
+- 高度な分析機能：ローリングトレンド、チャネル相関、予測分析、異常検知、セグメンテーション
 
 ## 対象サイトの登録場所
 
@@ -168,17 +175,23 @@ https://example.com/
 https://example.com/service
 ```
 
-このファイルはダッシュボード上から編集しても大丈夫です。保存後、worker のキューに自動反映されます。既存URLを更新して保存した場合も `pending` に戻るため、次回 cycle から再解析されます。
+保存後、worker のキューに自動反映されます。既存URLを更新して保存した場合も `pending` に戻るため、次回 cycle から再解析されます。
 
 入力できるのは public な `http://` / `https://` URL だけです。`localhost`、`127.0.0.1`、社内IP、`host.docker.internal` などの private 宛てURLは拒否します。
 
 ## 実行コマンド
 
+**1回限りの分析実行:**
 ```bash
-./start.sh
+python main.py --enable-forecasting --enable-impact-analysis
 ```
 
-この1コマンドで、分析実行、改善提案生成、対象サイト診断、ダッシュボード起動までまとめて行います。
+**または 定期バッチ処理:**
+```bash
+./run_worker.sh
+```
+
+100% バッチ処理で動作。処理時間は最大3時間までOK。全レポートは `reports/` に自動保存されます。
 
 ## ローカルLLM + AI全機能を使う（推奨設定）
 

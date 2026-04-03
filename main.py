@@ -483,18 +483,18 @@ def run_analysis(
             skip_llm=skip_llm,
         )
 
-        if not dry_run:
-            report = render_marketing_report(
-                snapshot=snapshot,
-                recommendations=recommendations,
-                url_results=site_results,
-                llm_summary=summary,
-                deep_analysis=deep_analysis,
-            )
-            report_path = save_report("manual_analysis", report)
-            logger.info("Report saved: %s", report_path)
-        else:
-            logger.info("Dry run: report generation skipped")
+    if not dry_run:
+        report = render_marketing_report(
+            snapshot=snapshot,
+            recommendations=recommendations,
+            url_results=site_results,
+            llm_summary=summary or "LLM処理をスキップしました",
+            deep_analysis=deep_analysis,
+        )
+        report_path = save_report("manual_analysis", report)
+        logger.info("Report saved: %s", report_path)
+    else:
+        logger.info("Dry run: report generation skipped")
 
     if save_json:
         json_path = save_json_summary(

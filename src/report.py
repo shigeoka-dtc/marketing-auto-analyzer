@@ -623,6 +623,82 @@ def _build_strategic_lp_section(url_results: list) -> str:
     return "\n".join(content_lines)
 
 
+def _build_advanced_analytics(advanced: dict) -> str:
+    """高度な分析結果をマークダウンで出力"""
+    lines = []
+    
+    # ローリングトレンド
+    if "revenue_momentum" in advanced:
+        lines.extend([
+            "### ローリングトレンド分析",
+            f"- 短期/長期MACD: {advanced.get('revenue_momentum', 'N/A')}",
+            f"- 収益変動性: {advanced.get('revenue_volatility', 'N/A')}",
+            ""
+        ])
+    
+    # チャネル相関
+    if "channel_correlations" in advanced:
+        corr = advanced["channel_correlations"]
+        strong_corrs = corr.get("strong_correlations", [])
+        lines.append("### チャネル相関分析")
+        if strong_corrs:
+            for correlation in strong_corrs:
+                strength_jp = "強い正相関" if correlation["strength"] == "strong_positive" else "強い負相関"
+                lines.append(f"- {correlation['channel_a']} ↔ {correlation['channel_b']}: {correlation['correlation']:.3f} ({strength_jp})")
+        else:
+            lines.append("- 強い相関は検出されませんでした")
+        lines.append("")
+    
+    # 予測分析
+    if "predictions" in advanced:
+        pred = advanced["predictions"]
+        lines.extend([
+            "### 予測分析",
+            f"- トレンド方向: {pred.get('trend_direction', 'N/A')}",
+            f"- 信頼度: {pred.get('confidence', 0):.2f}",
+        ])
+        if pred.get("forecast", {}).get("next_day_revenue"):
+            lines.append(f"- 次日予測収益: ¥{pred['forecast']['next_day_revenue']:,.0f}")
+        lines.append("")
+    
+    # 異常検知
+    if "anomalies" in advanced:
+        anomalies_list = advanced["anomalies"]
+        anomalies = anomalies_list.get("anomalies", [])
+        lines.append("### 異常検知")
+        if anomalies:
+            for anomaly in anomalies:
+                severity_jp = "深刻" if anomaly["severity"] == "extreme" else "中程度"
+                lines.append(f"- {anomaly['date']}: {anomaly['type'].upper()} ({severity_jp}) - Z={anomaly['z_score']:.2f}")
+        else:
+            lines.append("- 統計的異常は検出されませんでした")
+        lines.extend([
+            f"  (基準: Z > 2.0, 平均 ¥{anomalies_list.get('mean_revenue', 0):,.0f}, 標準偏差 ¥{anomalies_list.get('std_revenue', 0):,.0f})",
+            ""
+        ])
+    
+    # セグメンテーション分析
+    if "segmentation" in advanced:
+        seg = advanced["segmentation"]
+        lines.append("### セグメンテーション分析")
+        for segment in seg.get("segments", []):
+            type_jp = {
+                "high_performer": "🔥 高パフォーマー",
+                "consistent": "✅ 安定型",
+                "under_performer": "⚠️ 要改善"
+            }.get(segment["segment_type"], segment["segment_type"])
+            lines.append(f"- {segment['channel']}: {type_jp} (収益シェア: {segment['revenue_share']:.1%}, ROAS: {segment['roas']:.2f})")
+        
+        if seg.get("insights"):
+            lines.append("")
+            lines.append("**戦略的洞察:**")
+            for insight in seg["insights"]:
+                lines.append(f"- {insight}")
+        lines.append("")
+    
+    return "\n".join(lines)
+
+
 def render_marketing_report(
     *,
     snapshot: dict,
@@ -634,6 +710,10 @@ def render_marketing_report(
     """新しいレポート構造: 決めるもの → 根拠 → 詳細"""
     latest = snapshot["latest"]
     kpis = snapshot["kpis"]
+    alerts = snapshot["alerts"]
+    diagnostics = snapshot["diagnostics"]
+    advanced = snapshot.get("advanced", {})
+
     alerts = snapshot["alerts"]
     diagnostics = snapshot["diagnostics"]
 
@@ -822,6 +902,14 @@ Generated: {datetime.now(UTC).isoformat()}
 
 ### Alerts
 {chr(10).join(alert_lines)}
+
+---
+
+## Advanced Analytics
+
+高度な分析手法によるインサイト: トレンド、相関、予測、異常検知、セグメンテーション
+
+{_build_advanced_analytics(advanced)}
 
 ---
 
