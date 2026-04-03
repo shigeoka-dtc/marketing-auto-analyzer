@@ -15,6 +15,7 @@ from src.orchestration import (
     EnhancementService,
     ReportService,
 )
+from src.upload_analysis import analyze_uploaded_marketing_assets
 
 TARGET_SITE_MAX_PAGES = int(os.getenv("TARGET_SITE_MAX_PAGES", "5"))
 
@@ -108,6 +109,49 @@ def run_analysis(
         }
 
 
+def run_uploaded_asset_analysis(
+    csv_paths: list[str] | None = None,
+    image_paths: list[str] | None = None,
+    notes: str = "",
+    skip_llm: bool = False,
+) -> dict:
+    """
+    Analyze uploaded CSV and/or image assets and generate a marketer-oriented report.
+
+    Args:
+        csv_paths: Uploaded CSV paths
+        image_paths: Uploaded image paths
+        notes: Optional business context
+        skip_llm: Skip LLM/Vision analysis and use rule-based CSV analysis only
+
+    Returns:
+        Analysis result dictionary
+    """
+    logger = configure_logger()
+
+    try:
+        logger.info(
+            "Running uploaded asset analysis (csv=%s, images=%s)",
+            len(csv_paths or []),
+            len(image_paths or []),
+        )
+        result = analyze_uploaded_marketing_assets(
+            csv_paths=csv_paths,
+            image_paths=image_paths,
+            notes=notes,
+            skip_llm=skip_llm,
+            save_outputs=True,
+        )
+        logger.info("Uploaded asset analysis complete")
+        return result
+    except Exception as e:
+        logger.error("Uploaded asset analysis failed: %s", e, exc_info=True)
+        return {
+            "status": "failed",
+            "error": str(e),
+        }
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Marketing Auto Analyzer - Comprehensive Marketing Analysis Pipeline"
@@ -144,6 +188,24 @@ if __name__ == "__main__":
         help="Save JSON summary alongside markdown report"
     )
     parser.add_argument(
+        "--upload-csv",
+        action="append",
+        default=[],
+        help="Analyze an uploaded CSV file. Can be supplied multiple times."
+    )
+    parser.add_argument(
+        "--upload-image",
+        action="append",
+        default=[],
+        help="Analyze an uploaded image file (heatmap / LP screenshot). Can be supplied multiple times."
+    )
+    parser.add_argument(
+        "--upload-notes",
+        type=str,
+        default="",
+        help="Optional business context for uploaded asset analysis"
+    )
+    parser.add_argument(
         "--strategic-lp-count",
         type=int,
         default=1,
@@ -152,18 +214,29 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    result = run_analysis(
-        force_reload=args.force_reload,
-        max_site_pages=args.max_site_pages,
-        skip_llm=args.skip_llm,
-        skip_site_analysis=args.skip_site_analysis,
-        dry_run=args.dry_run,
-        save_json=args.save_json,
-        strategic_lp_analysis_count=args.strategic_lp_count,
-    )
-    
+    if args.upload_csv or args.upload_image:
+        result = run_uploaded_asset_analysis(
+            csv_paths=args.upload_csv,
+            image_paths=args.upload_image,
+            notes=args.upload_notes,
+            skip_llm=args.skip_llm,
+        )
+    else:
+        result = run_analysis(
+            force_reload=args.force_reload,
+            max_site_pages=args.max_site_pages,
+            skip_llm=args.skip_llm,
+            skip_site_analysis=args.skip_site_analysis,
+            dry_run=args.dry_run,
+            save_json=args.save_json,
+            strategic_lp_analysis_count=args.strategic_lp_count,
+        )
+
     if result["status"] == "success":
-        print(f"\n✓ Analysis complete. Report: {result['report_path']}")
+        if result.get("report_path"):
+            print(f"\n✓ Analysis complete. Report: {result['report_path']}")
+        else:
+            print("\n✓ Analysis complete.")
     else:
         print(f"\n✗ Analysis failed: {result.get('error', 'unknown error')}")
         exit(1)
